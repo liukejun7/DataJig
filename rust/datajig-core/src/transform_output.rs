@@ -143,7 +143,11 @@ fn verify_transform_candidate_mode(
     if candidate_metadata.len() > limits.output_bytes {
         return Err(output_error(
             TransformOutputErrorKind::OutputLimit,
-            "transform candidate exceeds the output byte limit",
+            format!(
+                "transform candidate is {} bytes > limit {} bytes",
+                candidate_metadata.len(),
+                limits.output_bytes
+            ),
         ));
     }
     let source = open_regular_file_nofollow(candidate)
@@ -151,7 +155,11 @@ fn verify_transform_candidate_mode(
     if source.metadata()?.len() > limits.output_bytes {
         return Err(output_error(
             TransformOutputErrorKind::OutputLimit,
-            "transform candidate exceeds the output byte limit",
+            format!(
+                "transform candidate is {} bytes > limit {} bytes",
+                source.metadata()?.len(),
+                limits.output_bytes
+            ),
         ));
     }
     let mut reader = BufReader::new(source);
@@ -194,7 +202,15 @@ fn verify_transform_candidate_mode(
         if rows > limits.output_rows {
             return Err(output_error(
                 TransformOutputErrorKind::OutputLimit,
-                "transform output exceeds the row limit",
+                format!(
+                    "transform output contains at least {rows} rows > limit {} {}",
+                    limits.output_rows,
+                    if limits.output_rows == 1 {
+                        "row"
+                    } else {
+                        "rows"
+                    }
+                ),
             ));
         }
         if line.last() == Some(&b'\n') {
@@ -259,7 +275,10 @@ fn verify_transform_candidate_mode(
         if next_bytes > limits.output_bytes {
             return Err(output_error(
                 TransformOutputErrorKind::OutputLimit,
-                "canonical transform output exceeds the byte limit",
+                format!(
+                    "canonical transform output is {next_bytes} bytes > limit {} bytes",
+                    limits.output_bytes
+                ),
             ));
         }
         writer.write_all(&encoded)?;
@@ -328,7 +347,15 @@ fn validate_schema(
     if observed.is_empty() || observed.len() > limits.output_fields {
         return Err(output_error(
             TransformOutputErrorKind::Schema,
-            "transform output schema is empty or exceeds its field limit",
+            if observed.is_empty() {
+                "transform output schema is empty".to_owned()
+            } else {
+                format!(
+                    "transform output schema has {} fields > limit {} fields",
+                    observed.len(),
+                    limits.output_fields
+                )
+            },
         ));
     }
     let mut names = HashSet::new();

@@ -9,10 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/liukejun7/DataJig/actions/workflows/ci.yml"><img src="https://github.com/liukejun7/DataJig/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/datajig/"><img src="https://img.shields.io/pypi/v/datajig?label=PyPI" alt="PyPI"></a>
-  <a href="https://pypi.org/project/datajig/"><img src="https://img.shields.io/pypi/pyversions/datajig" alt="Python versions"></a>
-  <a href="https://github.com/liukejun7/DataJig/blob/main/LICENSE"><img src="https://img.shields.io/github/license/liukejun7/DataJig" alt="License"></a>
+  <a href="https://pypi.org/project/datajig/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-D22128" alt="Apache-2.0 license"></a>
 </p>
 
 <p align="center">
@@ -39,7 +38,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.8.0` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.8.1` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -121,6 +120,10 @@ datajig lineage pipe_... --state workspace/.datajig --format text
 `create` initializes a new keyed-JSONL workspace. `update` prepares a detached
 revision and bundle first, then advances HEAD with compare-and-swap. A commit
 marker makes the delivery visible only after every consumption plan is bound.
+An eligible update may reuse the same delivery path: DataJig verifies the old
+marker, receipt, bundle, dataset, base revision, and live HEAD, probes the target
+filesystem, then atomically exchanges both directories and retains the verified
+previous delivery as a backup. There is no non-atomic fallback.
 Crashes retain a bounded journal and continue only with explicit `--resume`;
 ordinary reruns never guess. Identical transformed content is a no-op revision
 but still produces the requested bundle, consumer plans, and `piped_...`

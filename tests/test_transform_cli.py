@@ -74,6 +74,10 @@ class TransformCliBindingTests(unittest.TestCase):
         error = json.loads(stderr.getvalue())
         self.assertEqual("PROVIDER_UNAVAILABLE", error["error"]["code"])
         self.assertIn("pip install 'datajig[duckdb]'", error["error"]["message"])
+        self.assertEqual(
+            [{"command": "transform-plan", "args": ["--help"]}],
+            error["next_actions"],
+        )
 
     def test_help_does_not_require_the_optional_provider(self) -> None:
         with (
@@ -92,6 +96,64 @@ class TransformCliBindingTests(unittest.TestCase):
 
 
 class TransformCliWorkflowTests(DataJigCliTestCase):
+    def test_mixed_newline_csv_round_trip_preserves_raw_source_bytes(self) -> None:
+        source = self.root / "mixed.csv"
+        raw = b'id,text\r\n1,"hello\nworld"\r\n2,plain\n3,"crlf\r\ninside"\r\n'
+        source.write_bytes(raw)
+        output = self.root / "prepared.jsonl"
+        plan = self.root / "transform-plan.json"
+
+        planned = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"mixed={source}",
+            "--sql",
+            "SELECT id, text FROM mixed ORDER BY id",
+            "--id-field",
+            "id",
+            "--output",
+            output,
+            "--plan",
+            plan,
+        ).payload["artifact"]
+        self.run_cli("transform-apply", plan, "--accept-plan", planned["plan_id"])
+
+        self.assertEqual(raw, source.read_bytes())
+        self.assertEqual(
+            [
+                {"id": "1", "text": "hello\nworld"},
+                {"id": "2", "text": "plain"},
+                {"id": "3", "text": "crlf\r\ninside"},
+            ],
+            [json.loads(line) for line in output.read_text().splitlines()],
+        )
+
+    def test_source_load_failure_has_diagnostic_and_next_action(self) -> None:
+        source = self.root / "unclosed.csv"
+        source.write_bytes(b'id,value\n1,"never closes\n2,x\n')
+
+        failed = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id, value FROM events ORDER BY id",
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "prepared.jsonl",
+            "--plan",
+            self.root / "transform-plan.json",
+            expected_returncode=2,
+        ).payload
+
+        self.assertEqual("SOURCE_LOAD_FAILED", failed["error"]["code"])
+        self.assertIn("did not report a line number", failed["error"]["message"])
+        self.assertEqual(
+            [{"command": "transform-plan", "args": ["--help"]}],
+            failed["next_actions"],
+        )
+
     def test_sql_file_is_embedded_in_the_plan_and_not_a_live_apply_dependency(self) -> None:
         source = self.root / "events.csv"
         source.write_text("id,value\na,1\nb,2\n", encoding="utf-8")

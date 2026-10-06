@@ -385,6 +385,17 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         "base_revision": base_revision,
         "bindings": {"config_base": os.path.relpath(config_path.parent, plan_path.parent)},
     }
+    planned_paths = _execution_paths(artifact, plan_path)
+    if planned_paths["delivery"].exists() or planned_paths["delivery"].is_symlink():
+        if target_normalized["mode"] != "update":
+            _fail("create requires delivery.output to be absent")
+        _verify_replacement_delivery(
+            artifact,
+            planned_paths,
+            planned_paths["delivery"],
+            expected_head=base_revision,
+        )
+        _probe_atomic_exchange(planned_paths["delivery"].parent)
     if plan_path.exists() or plan_path.is_symlink():
         raise PipelineError("OUTPUT_EXISTS", "Pipeline plan destination already exists")
     _write_new_json(plan_path, artifact)
@@ -545,6 +556,66 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), destination)
     _sync_directory(destination.parent)
+
+
+def _exchange_directories(left: Path, right: Path) -> None:
+    import ctypes
+    import errno
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    left_bytes = os.fsencode(left)
+    right_bytes = os.fsencode(right)
+    try:
+        if sys.platform.startswith("linux"):
+            rename = libc.renameat2
+            rename.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            rename.restype = ctypes.c_int
+            result = rename(-100, left_bytes, -100, right_bytes, 2)
+        elif sys.platform == "darwin":
+            rename = libc.renamex_np
+            rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+            rename.restype = ctypes.c_int
+            result = rename(left_bytes, right_bytes, 2)
+        else:
+            raise OSError(errno.ENOTSUP, "atomic directory exchange is unsupported")
+    except AttributeError as exc:
+        raise OSError(errno.ENOTSUP, "atomic directory exchange is unavailable") from exc
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), right)
+    _sync_directory(left.parent)
+    if right.parent != left.parent:
+        _sync_directory(right.parent)
+
+
+def _probe_atomic_exchange(parent: Path) -> None:
+    left = Path(tempfile.mkdtemp(prefix=".datajig-exchange-probe-a-", dir=parent))
+    right = Path(tempfile.mkdtemp(prefix=".datajig-exchange-probe-b-", dir=parent))
+    try:
+        (left / "left").write_text("left", encoding="utf-8")
+        (right / "right").write_text("right", encoding="utf-8")
+        _exchange_directories(left, right)
+        if not (left / "right").is_file() or not (right / "left").is_file():
+            raise OSError("atomic directory exchange did not swap both entries")
+        _exchange_directories(left, right)
+        if not (left / "left").is_file() or not (right / "right").is_file():
+            raise OSError("atomic directory exchange could not be reversed")
+    except OSError as exc:
+        raise PipelineError(
+            "ATOMIC_EXCHANGE_UNSUPPORTED",
+            "The delivery filesystem does not support atomic directory exchange; "
+            "use a new delivery directory or a compatible local filesystem",
+            delivery_parent=str(parent),
+        ) from exc
+    finally:
+        shutil.rmtree(left, ignore_errors=True)
+        shutil.rmtree(right, ignore_errors=True)
 
 
 def read_pipeline_artifact(path: Path, verify: bool = False) -> dict[str, object]:
@@ -852,16 +923,22 @@ def apply_pipeline(
             actual_id=accepted_pipeline_id,
         )
     paths = _execution_paths(plan, plan_path)
-    existing = _committed_delivery(paths["delivery"], pipeline_id)
-    if (
-        existing is None
-        and (paths["delivery"].exists() or paths["delivery"].is_symlink())
-        and not resume
-    ):
-        raise PipelineError(
-            "DELIVERY_CONFLICT",
-            "DataJig refuses to replace an existing delivery not owned by this pipeline",
-        )
+    existing = _committed_delivery(paths["delivery"], pipeline_id, allow_other=True)
+    if existing is None and (paths["delivery"].exists() or paths["delivery"].is_symlink()):
+        target_mode = _mapping_text(_plan_mapping(plan, "target"), "mode", "target")
+        if not resume and target_mode == "update":
+            _verify_replacement_delivery(
+                plan,
+                paths,
+                paths["delivery"],
+                expected_head=plan.get("base_revision"),
+            )
+            _probe_atomic_exchange(paths["delivery"].parent)
+        elif not resume:
+            raise PipelineError(
+                "DELIVERY_CONFLICT",
+                "DataJig refuses to replace an existing delivery not owned by this pipeline",
+            )
 
     control_root = _control_root(plan, paths["state"], pipeline_id)
     control_root.mkdir(parents=True, exist_ok=True)
@@ -885,7 +962,7 @@ def apply_pipeline(
         )
         stack.enter_context(_advisory_lock(workspace_lock, "WORKSPACE_BUSY"))
 
-        existing = _committed_delivery(paths["delivery"], pipeline_id)
+        existing = _committed_delivery(paths["delivery"], pipeline_id, allow_other=True)
         if existing is not None:
             _persist_success(paths["state"], pipeline_id, existing)
             recovered_journal = _load_journal(journal_path)
@@ -950,8 +1027,10 @@ def apply_pipeline(
                     phase=phase,
                     retryable=True,
                 )
-        if phase == "head_committed":
-            receipt = _publish_delivery(plan, paths, attempt, artifacts)
+        if phase in {"head_committed", "delivery_exchanged"}:
+            receipt = _publish_delivery(
+                plan, paths, attempt, artifacts, journal_path, journal, phase
+            )
             _advance_journal(journal_path, journal, "delivery_committed")
             phase = "delivery_committed"
         else:
@@ -1093,6 +1172,7 @@ def _journal_phase(journal: Mapping[str, object]) -> str:
         "revision_prepared",
         "head_committed",
         "prepared",
+        "delivery_exchanged",
         "delivery_committed",
         "completed",
     }:
@@ -1460,13 +1540,38 @@ def _prepare_delivery(
     for split in splits:
         arguments.extend(("--split", str(split)))
     exported = _run_native_artifact(arguments)
+    consumption_results = _create_consumption_plans(plan, delivery_stage)
     artifacts.update(
         {
             "delivery_stage": str(delivery_stage),
             "bundle_id": exported["bundle_id"],
             "bundle_manifest": "bundle/datajig.bundle.json",
+            "consumption_plans": consumption_results,
         }
     )
+    if paths["delivery"].exists() or paths["delivery"].is_symlink():
+        previous = _verify_replacement_delivery(
+            plan,
+            paths,
+            paths["delivery"],
+            expected_head=plan.get("base_revision"),
+        )
+        backup = paths["delivery"].parent / (
+            f".{paths['delivery'].name}.datajig-backup-{previous['pipeline_receipt_id']}"
+        )
+        if backup.exists() or backup.is_symlink():
+            raise PipelineError(
+                "DELIVERY_CONFLICT", "The deterministic delivery backup path already exists"
+            )
+        artifacts.update(
+            {
+                "replaced_pipeline_id": previous["pipeline_id"],
+                "delivery_backup": str(backup),
+            }
+        )
+    receipt = _build_delivery_receipt(plan, paths, artifacts)
+    artifacts["pipeline_receipt"] = receipt
+    _write_new_json(delivery_stage / "pipeline-receipt.json", receipt)
 
 
 def _publish_delivery(
@@ -1474,10 +1579,76 @@ def _publish_delivery(
     paths: Mapping[str, Path],
     attempt: Path,
     artifacts: dict[str, object],
+    journal_path: Path,
+    journal: dict[str, object],
+    phase: str,
 ) -> dict[str, object]:
     del attempt
     delivery_stage = Path(str(artifacts["delivery_stage"]))
-    if not paths["delivery"].exists():
+    raw_receipt = artifacts.get("pipeline_receipt")
+    if not isinstance(raw_receipt, dict):
+        raise PipelineError("PIPELINE_RECOVERY_CORRUPT", "Pipeline receipt is missing")
+    receipt = dict(raw_receipt)
+    backup_value = artifacts.get("delivery_backup")
+    if isinstance(backup_value, str):
+        backup = Path(backup_value)
+        if phase == "head_committed":
+            _verify_replacement_delivery(
+                plan,
+                paths,
+                paths["delivery"],
+                expected_head=artifacts.get("revision_id"),
+            )
+            try:
+                _exchange_directories(delivery_stage, paths["delivery"])
+            except OSError as exc:
+                if exc.errno in {22, 38, 45, 95}:
+                    raise PipelineError(
+                        "ATOMIC_EXCHANGE_UNSUPPORTED",
+                        "The delivery filesystem does not support atomic directory exchange; "
+                        "choose a new delivery directory or a compatible local filesystem",
+                        delivery=str(paths["delivery"]),
+                    ) from exc
+                raise
+            _advance_journal(journal_path, journal, "delivery_exchanged")
+            phase = "delivery_exchanged"
+            if os.environ.get("DATAJIG_PIPELINE_FAILPOINT") == "after_delivery_exchange":
+                raise PipelineError(
+                    "PIPELINE_INTERRUPTED",
+                    "Pipeline stopped after atomic delivery exchange; recovery must finish forward",
+                    phase=phase,
+                    retryable=True,
+                )
+        if phase != "delivery_exchanged":
+            raise PipelineError("PIPELINE_RECOVERY_CORRUPT", "Delivery exchange phase is invalid")
+        _verify_pending_delivery(paths["delivery"], receipt)
+        if delivery_stage.exists() or delivery_stage.is_symlink():
+            _verify_replacement_delivery(
+                plan,
+                paths,
+                delivery_stage,
+                expected_head=artifacts.get("revision_id"),
+                expected_delivery=paths["delivery"],
+            )
+            try:
+                _rename_directory_noreplace(delivery_stage, backup)
+            except FileExistsError as exc:
+                raise PipelineError(
+                    "PIPELINE_RECOVERY_CORRUPT", "Delivery backup appeared during recovery"
+                ) from exc
+        elif backup.is_dir() and not backup.is_symlink():
+            _verify_replacement_delivery(
+                plan,
+                paths,
+                backup,
+                expected_head=artifacts.get("revision_id"),
+                expected_delivery=paths["delivery"],
+            )
+        else:
+            raise PipelineError(
+                "PIPELINE_RECOVERY_CORRUPT", "Exchanged delivery backup is missing"
+            )
+    elif not paths["delivery"].exists():
         try:
             _rename_directory_noreplace(delivery_stage, paths["delivery"])
         except FileExistsError as exc:
@@ -1504,8 +1675,24 @@ def _publish_delivery(
         raise PipelineError("DELIVERY_CONFLICT", "Both staged and target delivery exist")
     if not paths["delivery"].is_dir() or paths["delivery"].is_symlink():
         raise PipelineError("DELIVERY_CONFLICT", "Incomplete delivery target is invalid")
-    consumption_results = _create_consumption_plans(plan, paths["delivery"])
-    artifacts["consumption_plans"] = consumption_results
+    receipt_path = paths["delivery"] / "pipeline-receipt.json"
+    _verify_json_file(receipt_path, receipt, "Published pipeline receipt")
+    marker = paths["delivery"] / ".datajig-commit.json"
+    if not marker.exists():
+        _write_new_json(marker, receipt)
+    if os.environ.get("DATAJIG_PIPELINE_FAILPOINT") == "after_delivery_marker":
+        raise PipelineError(
+            "PIPELINE_INTERRUPTED",
+            "Pipeline stopped after publishing its commit marker",
+            phase="delivery_marker_published",
+            retryable=True,
+        )
+    return receipt
+
+
+def _build_delivery_receipt(
+    plan: Mapping[str, object], paths: Mapping[str, Path], artifacts: Mapping[str, object]
+) -> dict[str, object]:
     raw_inputs = plan.get("inputs")
     source_content_ids = (
         [item["content_id"] for item in raw_inputs if isinstance(item, dict)]
@@ -1527,26 +1714,14 @@ def _publish_delivery(
         "report_id": artifacts.get("report_id"),
         "bundle_id": artifacts["bundle_id"],
         "bundle_manifest": artifacts["bundle_manifest"],
-        "consumption_plans": consumption_results,
+        "consumption_plans": artifacts["consumption_plans"],
         "delivery": str(paths["delivery"].resolve()),
         "no_op": bool(artifacts.get("no_op", False)),
     }
+    if isinstance(artifacts.get("delivery_backup"), str):
+        receipt_basis["delivery_backup"] = artifacts["delivery_backup"]
     receipt_id = _identity("piped", b"datajig-pipeline-receipt-v1", receipt_basis)
-    receipt = {**receipt_basis, "pipeline_receipt_id": receipt_id}
-    receipt_path = paths["delivery"] / "pipeline-receipt.json"
-    if not receipt_path.exists():
-        _write_new_json(receipt_path, receipt)
-    marker = paths["delivery"] / ".datajig-commit.json"
-    if not marker.exists():
-        _write_new_json(marker, receipt)
-    if os.environ.get("DATAJIG_PIPELINE_FAILPOINT") == "after_delivery_marker":
-        raise PipelineError(
-            "PIPELINE_INTERRUPTED",
-            "Pipeline stopped after publishing its commit marker",
-            phase="delivery_marker_published",
-            retryable=True,
-        )
-    return receipt
+    return {**receipt_basis, "pipeline_receipt_id": receipt_id}
 
 
 def _create_consumption_plans(
@@ -1604,22 +1779,141 @@ def _create_consumption_plans(
     return results
 
 
-def _committed_delivery(path: Path, pipeline_id: str) -> dict[str, object] | None:
+def _committed_delivery(
+    path: Path, pipeline_id: str, *, allow_other: bool = False
+) -> dict[str, object] | None:
     marker = path / ".datajig-commit.json"
     if not marker.is_file():
         return None
-    try:
-        receipt = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery marker is invalid") from exc
-    if not isinstance(receipt, dict) or receipt.get("pipeline_id") != pipeline_id:
+    receipt = _read_owned_delivery(path, expected_delivery=path)
+    if receipt.get("pipeline_id") != pipeline_id:
+        if allow_other:
+            return None
         raise PipelineError("DELIVERY_CONFLICT", "Existing delivery belongs to another pipeline")
-    expected = receipt.get("pipeline_receipt_id")
-    basis = {key: value for key, value in receipt.items() if key != "pipeline_receipt_id"}
-    actual = _identity("piped", b"datajig-pipeline-receipt-v1", basis)
-    if expected != actual or receipt.get("status") != "committed":
-        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery marker failed verification")
     return receipt
+
+
+def _read_owned_delivery(path: Path, *, expected_delivery: Path) -> dict[str, object]:
+    if path.is_symlink() or not path.is_dir():
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery is not a direct directory")
+    marker = path / ".datajig-commit.json"
+    receipt_path = path / "pipeline-receipt.json"
+    for candidate, label in ((marker, "marker"), (receipt_path, "receipt")):
+        try:
+            metadata = candidate.lstat()
+        except OSError as exc:
+            raise PipelineError(
+                "DELIVERY_CONFLICT", f"Existing delivery {label} is missing"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise PipelineError(
+                "DELIVERY_CONFLICT", f"Existing delivery {label} is not a direct regular file"
+            )
+    try:
+        marker_payload = json.loads(marker.read_text(encoding="utf-8"))
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery metadata is invalid") from exc
+    if not isinstance(marker_payload, dict) or not isinstance(receipt, dict):
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery metadata is invalid")
+    if marker_payload != receipt:
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery marker and receipt differ")
+    try:
+        _verify_pipeline_receipt(receipt)
+    except PipelineError as exc:
+        raise PipelineError(
+            "DELIVERY_CONFLICT", "Existing delivery marker failed verification"
+        ) from exc
+    try:
+        expected_path = str(expected_delivery.resolve(strict=True))
+    except OSError as exc:
+        raise PipelineError(
+            "DELIVERY_CONFLICT", "Existing delivery path cannot be resolved"
+        ) from exc
+    if receipt.get("delivery") != expected_path:
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery receipt path is not exact")
+    return receipt
+
+
+def _verify_replacement_delivery(
+    plan: Mapping[str, object],
+    paths: Mapping[str, Path],
+    candidate: Path,
+    *,
+    expected_head: object,
+    expected_delivery: Path | None = None,
+) -> dict[str, object]:
+    if not isinstance(expected_head, str):
+        raise PipelineError("DELIVERY_CONFLICT", "Expected workspace HEAD is unavailable")
+    receipt = _read_owned_delivery(
+        candidate, expected_delivery=expected_delivery or paths["delivery"]
+    )
+    base_revision = plan.get("base_revision")
+    if not isinstance(base_revision, str) or receipt.get("final_revision") != base_revision:
+        raise PipelineError(
+            "DELIVERY_CONFLICT",
+            "Existing delivery is not the direct predecessor of this update",
+        )
+    status = _run_native_artifact(["status", "--state", str(paths["state"])])
+    if status.get("head_revision_id") != expected_head:
+        raise PipelineError(
+            "PIPELINE_HEAD_DRIFT", "Workspace HEAD changed before delivery exchange"
+        )
+    manifest_relative = receipt.get("bundle_manifest")
+    if manifest_relative != "bundle/datajig.bundle.json":
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery manifest path is invalid")
+    manifest = candidate / "bundle" / "datajig.bundle.json"
+    verified = _run_native_artifact(
+        [
+            "export-info",
+            str(manifest),
+            "--verify",
+            "--expect-bundle",
+            str(receipt.get("bundle_id")),
+            "--expect-revision",
+            str(receipt.get("final_revision")),
+        ]
+    )
+    if (
+        verified.get("bundle_id") != receipt.get("bundle_id")
+        or verified.get("source_revision_id") != receipt.get("final_revision")
+    ):
+        raise PipelineError("DELIVERY_CONFLICT", "Existing delivery bundle identity is invalid")
+    try:
+        manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        source = manifest_payload["source"]
+        manifest_dataset_id = source["dataset_id"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise PipelineError(
+            "DELIVERY_CONFLICT", "Existing delivery bundle source is invalid"
+        ) from exc
+    if manifest_dataset_id != status.get("dataset_id"):
+        raise PipelineError(
+            "DELIVERY_CONFLICT", "Existing delivery belongs to another dataset workspace"
+        )
+    return receipt
+
+
+def _verify_pending_delivery(path: Path, expected: Mapping[str, object]) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise PipelineError("PIPELINE_RECOVERY_CORRUPT", "Exchanged delivery is not a directory")
+    if (path / ".datajig-commit.json").exists():
+        raise PipelineError(
+            "PIPELINE_RECOVERY_CORRUPT", "Exchanged delivery marker appeared before recovery"
+        )
+    _verify_json_file(path / "pipeline-receipt.json", expected, "Exchanged pipeline receipt")
+
+
+def _verify_json_file(path: Path, expected: Mapping[str, object], label: str) -> None:
+    try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise OSError("not a direct regular file")
+        actual = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PipelineError("PIPELINE_RECOVERY_CORRUPT", f"{label} is invalid") from exc
+    if actual != dict(expected):
+        raise PipelineError("PIPELINE_RECOVERY_CORRUPT", f"{label} does not match its journal")
 
 
 def _persist_success(state: Path, pipeline_id: str, receipt: Mapping[str, object]) -> None:

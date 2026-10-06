@@ -347,13 +347,23 @@ fn output_verifier_enforces_id_integrity_and_stream_limits() {
 
     let mut row_limits = TransformLimits::v1();
     row_limits.output_rows = 1;
-    assert_output_error(
-        "row-limit",
+    let row_candidate = temporary_path("row-limit-candidate.jsonl");
+    let row_canonical = temporary_path("row-limit-canonical.jsonl");
+    fs::write(
+        &row_candidate,
         "{\"id\":1,\"value\":\"a\"}\n{\"id\":2,\"value\":\"b\"}\n",
-        &schema,
-        row_limits,
-        TransformOutputErrorKind::OutputLimit,
+    )
+    .unwrap();
+    let row_error =
+        verify_transform_candidate(&row_candidate, &row_canonical, "id", &schema, &row_limits)
+            .unwrap_err();
+    assert!(
+        row_error
+            .to_string()
+            .contains("at least 2 rows > limit 1 row"),
+        "{row_error}"
     );
+    let _ = fs::remove_file(row_candidate);
 
     let mut byte_limits = TransformLimits::v1();
     byte_limits.output_bytes = 10;
@@ -405,6 +415,10 @@ fn output_verifier_accepts_256_fields_and_rejects_the_next() {
     assert_eq!(
         TransformOutputErrorKind::Schema,
         error.downcast_ref::<TransformOutputError>().unwrap().kind()
+    );
+    assert!(
+        error.to_string().contains("257 fields > limit 256 fields"),
+        "{error}"
     );
     assert!(!canonical.exists());
     let _ = fs::remove_file(candidate);

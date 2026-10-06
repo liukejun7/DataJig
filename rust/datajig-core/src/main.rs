@@ -392,10 +392,13 @@ enum Command {
         accept_plan: String,
     },
     /// Plan deterministic CSV/Parquet/JSONL preparation from one file or import receipt.
+    #[command(
+        after_help = "Discover the complete schema and canonical example:\n  datajig artifact-schema prepare-recipe\n\nMinimal recipe:\n  {\"namespace\":\"datajig\",\"kind\":\"prepare\",\"schema_version\":1,\"source\":{\"format\":\"csv\"},\"output\":{\"format\":\"jsonl\"},\"id_field\":\"id\",\"steps\":[]}"
+    )]
     PreparePlan {
         /// CSV, flat Parquet, JSONL, a recursive same-format directory, or datajig.hf-import.json.
         source: PathBuf,
-        /// Schema-1 preparation recipe.
+        /// Schema-1 recipe; run `datajig artifact-schema prepare-recipe` for fields and example.
         #[arg(long)]
         recipe: PathBuf,
         /// New JSONL output path to bind into the plan.
@@ -2887,6 +2890,9 @@ fn exit_with_error(
     {
         error["message"] = json!(provider.message());
         error["remediation"] = json!({"summary": provider.remediation()});
+        if let Some(command) = command.filter(|value| !value.starts_with('-')) {
+            next_actions.push(json!({"command": command, "args": ["--help"]}));
+        }
     } else if let Some(remediation) = source
         .and_then(|error| error.downcast_ref::<InvalidArgumentError>())
         .and_then(InvalidArgumentError::remediation)

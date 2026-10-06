@@ -24,7 +24,7 @@ raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → �
 如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
 会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.8.0` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.8.1` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## DataJig 在技术栈中的位置
 
@@ -76,6 +76,9 @@ datajig lineage pipe_... --state workspace/.datajig --format text
 消费计划全部生成且 commit marker 写入后才可见。中断会留下有界 journal，必须显式
 加 `--resume` 恢复，普通重跑不会猜测执行意图。内容不变时不会制造新 revision，但
 仍会交付 bundle、消费计划和 `piped_...` receipt。
+符合所有权、dataset、base revision、manifest 与 HEAD 校验的更新可以复用固定
+delivery 路径；DataJig 会先探测目标文件系统，再执行原子目录交换并保留旧版备份，
+不提供非原子降级路径。
 
 ## 一条贯穿全程的证据链
 

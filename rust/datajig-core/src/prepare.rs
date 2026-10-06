@@ -527,13 +527,22 @@ fn load_recipe(path: &Path) -> Result<(PrepareRecipe, String)> {
 }
 
 fn validate_recipe(recipe: &PrepareRecipe) -> Result<()> {
-    if recipe.namespace != ARTIFACT_NAMESPACE
-        || recipe.kind != "prepare"
-        || recipe.schema_version != PREPARE_RECIPE_SCHEMA_VERSION
-        || recipe.output.format != "jsonl"
-    {
+    if recipe.namespace != ARTIFACT_NAMESPACE {
+        return Err(recipe_contract_error("preparation recipe namespace must be 'datajig'").into());
+    }
+    if recipe.kind != "prepare" {
+        return Err(recipe_contract_error("preparation recipe kind must be 'prepare'").into());
+    }
+    if recipe.schema_version != PREPARE_RECIPE_SCHEMA_VERSION {
+        return Err(recipe_contract_error(format!(
+            "preparation recipe schema_version {} is unsupported; expected {}",
+            recipe.schema_version, PREPARE_RECIPE_SCHEMA_VERSION
+        ))
+        .into());
+    }
+    if recipe.output.format != "jsonl" {
         return Err(
-            InvalidArgumentError::new("unsupported preparation recipe identity or format").into(),
+            recipe_contract_error("preparation recipe output.format must be 'jsonl'").into(),
         );
     }
     if let PrepareSource::Csv { delimiter, .. } = &recipe.source {
@@ -586,6 +595,14 @@ fn validate_recipe(recipe: &PrepareRecipe) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn recipe_contract_error(message: impl Into<String>) -> InvalidArgumentError {
+    InvalidArgumentError::new(message).with_remediation(
+        "Inspect the complete preparation recipe schema and canonical example.",
+        "artifact-schema",
+        vec!["prepare-recipe".into()],
+    )
 }
 
 fn execute<W: Write>(

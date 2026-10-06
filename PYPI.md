@@ -8,6 +8,10 @@ It wraps data work in explicit plans, deterministic identities, semantic checks,
 immutable revisions, and evidence of which records crossed a verified training
 adapter boundary.
 
+Version 0.8.1 adds mixed-newline CSV handling, quantified transform diagnostics,
+discoverable preparation recipes, and fail-closed atomic updates for eligible
+fixed delivery paths.
+
 ```text
 raw source -> pin -> prepare/transform -> review -> seal -> export -> train
                 `------ content-addressed evidence -------'  `-> receipt

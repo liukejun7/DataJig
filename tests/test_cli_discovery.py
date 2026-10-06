@@ -56,6 +56,11 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("--sql-file <SQL_FILE>", transform.stdout)
         self.assertIn("CSV columns are strings", transform.stdout)
 
+        prepare = self.run_help("prepare-plan")
+        self.assertEqual(0, prepare.returncode, prepare.stderr)
+        self.assertIn("datajig artifact-schema prepare-recipe", prepare.stdout)
+        self.assertIn('"namespace":"datajig"', prepare.stdout)
+
     def test_top_level_help_lists_transform_workflow(self) -> None:
         completed = self.run_help("")
         self.assertEqual(0, completed.returncode, completed.stderr)
@@ -90,6 +95,14 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertEqual([1], payload["pipeline_receipt_schema_versions"])
         self.assertEqual([1], payload["pipeline_lineage_schema_versions"])
         self.assertTrue(payload["features"]["recoverable_pipeline"])
+        self.assertEqual("flat", payload["artifact_file_shape"])
+        self.assertEqual("agent_envelope_v1", payload["cli_response_shape"])
+        self.assertEqual(
+            ["linux", "macos"], payload["delivery_update"]["atomic_exchange_platforms"]
+        )
+        self.assertTrue(payload["delivery_update"]["filesystem_preflight"])
+        self.assertEqual("none", payload["delivery_update"]["fallback"])
+        self.assertTrue(payload["features"]["fixed_delivery_updates"])
 
     def test_top_level_version_matches_installed_package_metadata(self) -> None:
         environment = os.environ.copy()

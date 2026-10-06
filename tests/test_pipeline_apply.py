@@ -5,11 +5,27 @@ import json
 import os
 from pathlib import Path
 
-from datajig.pipeline import _rename_directory_noreplace
+from datajig.pipeline import _exchange_directories, _rename_directory_noreplace
 from tests.cli_harness import DataJigCliTestCase
 
 
 class PipelineApplyTests(DataJigCliTestCase):
+    def test_atomic_directory_exchange_swaps_both_directories_and_can_reverse(self) -> None:
+        left = self.root / "left"
+        right = self.root / "right"
+        left.mkdir()
+        right.mkdir()
+        (left / "left.txt").write_text("left", encoding="utf-8")
+        (right / "right.txt").write_text("right", encoding="utf-8")
+
+        _exchange_directories(left, right)
+        self.assertEqual("right", (left / "right.txt").read_text(encoding="utf-8"))
+        self.assertEqual("left", (right / "left.txt").read_text(encoding="utf-8"))
+
+        _exchange_directories(left, right)
+        self.assertEqual("left", (left / "left.txt").read_text(encoding="utf-8"))
+        self.assertEqual("right", (right / "right.txt").read_text(encoding="utf-8"))
+
     def test_atomic_directory_publish_does_not_replace_existing_target(self) -> None:
         source = self.root / "staged"
         target = self.root / "published"
@@ -110,6 +126,10 @@ consumption_plan:
             "pipe_" + "0" * 64,
         )
         self.assertEqual(planned["pipeline_id"], wrong.payload["error"]["expected_id"])
+        self.assertEqual(
+            [{"command": "pipeline", "args": ["--help"]}],
+            wrong.payload["next_actions"],
+        )
 
         source.write_text("user_id,amount\na,999\n", encoding="utf-8")
         drift = self.assert_cli_error(
@@ -234,17 +254,16 @@ consumption_plan:
         delivery.mkdir(parents=True)
         sentinel = delivery / "owner.txt"
         sentinel.write_text("keep", encoding="utf-8")
-        plan, planned = self._plan(config)
-
         result = self.assert_cli_error(
-            "DELIVERY_CONFLICT",
+            "INVALID_PIPELINE_CONFIG",
             "pipeline",
-            "apply",
-            plan,
-            "--accept-plan",
-            planned["pipeline_id"],
+            "plan",
+            "--config",
+            config,
+            "--plan",
+            config.parent / "pipeline-plan.json",
         )
-        self.assertIn("refuses", result.payload["error"]["message"])
+        self.assertIn("delivery.output", result.payload["error"]["message"])
         self.assertEqual("keep", sentinel.read_text(encoding="utf-8"))
 
     def test_plan_lock_rejects_concurrent_apply(self) -> None:
@@ -320,6 +339,106 @@ consumption_plan:
         self.assertTrue(
             (config.parent / "deliveries" / "user-agg-train-v3" / ".datajig-commit.json").is_file()
         )
+
+    def test_update_atomically_replaces_owned_fixed_delivery_and_retains_backup(self) -> None:
+        config, source = self._project()
+        first_plan, first_planned = self._plan(config)
+        first = self.run_cli(
+            "pipeline", "apply", first_plan, "--accept-plan", first_planned["pipeline_id"]
+        ).payload["artifact"]
+        delivery = config.parent / "deliveries" / "user-agg-train"
+
+        source.write_text(source.read_text(encoding="utf-8") + "user-new,500\n", encoding="utf-8")
+        update_text = config.read_text(encoding="utf-8").replace("mode: create", "mode: update")
+        update_text = update_text.replace("name: user-agg-train", "name: user-agg-train-v2", 1)
+        update_text = update_text.replace("run-2026-10-06", "run-2026-10-07")
+        update_config = config.parent / "fixed-update.yaml"
+        update_config.write_text(update_text, encoding="utf-8")
+        update_plan, update_planned = self._plan(update_config)
+
+        updated = self.run_cli(
+            "pipeline", "apply", update_plan, "--accept-plan", update_planned["pipeline_id"]
+        ).payload["artifact"]
+
+        marker = json.loads((delivery / ".datajig-commit.json").read_text(encoding="utf-8"))
+        backup = Path(str(updated["delivery_backup"]))
+        old_marker = json.loads((backup / ".datajig-commit.json").read_text(encoding="utf-8"))
+        self.assertEqual(update_planned["pipeline_id"], marker["pipeline_id"])
+        self.assertEqual(first["pipeline_receipt_id"], old_marker["pipeline_receipt_id"])
+        self.assertEqual(first["final_revision"], updated["base_revision"])
+        self.assertTrue(backup.is_dir())
+
+    def test_delivery_exchange_crash_recovers_forward_to_new_marker(self) -> None:
+        config, source = self._project()
+        first_plan, first_planned = self._plan(config)
+        first = self.run_cli(
+            "pipeline", "apply", first_plan, "--accept-plan", first_planned["pipeline_id"]
+        ).payload["artifact"]
+        delivery = config.parent / "deliveries" / "user-agg-train"
+
+        source.write_text(source.read_text(encoding="utf-8") + "user-new,500\n", encoding="utf-8")
+        update_text = config.read_text(encoding="utf-8").replace("mode: create", "mode: update")
+        update_text = update_text.replace("name: user-agg-train", "name: user-agg-train-v2", 1)
+        update_text = update_text.replace("run-2026-10-06", "run-2026-10-07")
+        update_config = config.parent / "exchange-recovery.yaml"
+        update_config.write_text(update_text, encoding="utf-8")
+        update_plan, update_planned = self._plan(update_config)
+
+        interrupted = self.run_cli(
+            "pipeline",
+            "apply",
+            update_plan,
+            "--accept-plan",
+            update_planned["pipeline_id"],
+            expected_returncode=2,
+            extra_env={"DATAJIG_PIPELINE_FAILPOINT": "after_delivery_exchange"},
+        ).payload
+        self.assertEqual("delivery_exchanged", interrupted["error"]["phase"])
+        self.assertFalse((delivery / ".datajig-commit.json").exists())
+        self.assertTrue((delivery / "pipeline-receipt.json").is_file())
+
+        resumed = self.run_cli(
+            "pipeline",
+            "apply",
+            update_plan,
+            "--accept-plan",
+            update_planned["pipeline_id"],
+            "--resume",
+        ).payload["artifact"]
+
+        marker = json.loads((delivery / ".datajig-commit.json").read_text(encoding="utf-8"))
+        self.assertEqual(update_planned["pipeline_id"], marker["pipeline_id"])
+        self.assertEqual(resumed["pipeline_receipt_id"], marker["pipeline_receipt_id"])
+        self.assertNotEqual(first["final_revision"], resumed["final_revision"])
+
+    def test_fixed_delivery_update_fails_closed_on_receipt_marker_mismatch(self) -> None:
+        config, source = self._project()
+        first_plan, first_planned = self._plan(config)
+        self.run_cli(
+            "pipeline", "apply", first_plan, "--accept-plan", first_planned["pipeline_id"]
+        )
+        delivery = config.parent / "deliveries" / "user-agg-train"
+        receipt_path = delivery / "pipeline-receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["bundle_id"] = "bundle_" + "0" * 64
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+        source.write_text(source.read_text(encoding="utf-8") + "user-new,500\n", encoding="utf-8")
+        update_text = config.read_text(encoding="utf-8").replace("mode: create", "mode: update")
+        update_text = update_text.replace("name: user-agg-train", "name: user-agg-train-v2", 1)
+        update_config = config.parent / "tampered-update.yaml"
+        update_config.write_text(update_text, encoding="utf-8")
+
+        failed = self.assert_cli_error(
+            "DELIVERY_CONFLICT",
+            "pipeline",
+            "plan",
+            "--config",
+            update_config,
+            "--plan",
+            config.parent / "tampered-update-plan.json",
+        )
+        self.assertIn("marker and receipt differ", failed.payload["error"]["message"])
 
     def test_update_resumes_after_dataset_replacement(self) -> None:
         config, source = self._project()
