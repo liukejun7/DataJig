@@ -55,7 +55,7 @@ jobs:
               auditwheel show dist/wheel/*.whl
               python -m twine check dist/wheel/*.whl
               python -m venv /tmp/datajig-wheel-smoke
-              /tmp/datajig-wheel-smoke/bin/python -m pip install dist/wheel/*.whl
+              /tmp/datajig-wheel-smoke/bin/python -m pip install --only-binary=:all: dist/wheel/*.whl
               /tmp/datajig-wheel-smoke/bin/datajig tutorial /tmp/datajig-wheel-tutorial > /tmp/datajig-wheel-tutorial.json
               /tmp/datajig-wheel-smoke/bin/python - <<"PY"
           import json
@@ -133,7 +133,7 @@ jobs:
       - name: Smoke test installed artifact
         run: |
           python -m venv /tmp/datajig-wheel-smoke
-          /tmp/datajig-wheel-smoke/bin/python -m pip install dist/wheel/*.whl
+          /tmp/datajig-wheel-smoke/bin/python -m pip install --only-binary=:all: dist/wheel/*.whl
           /tmp/datajig-wheel-smoke/bin/datajig tutorial /tmp/datajig-wheel-tutorial > /tmp/datajig-wheel-tutorial.json
           /tmp/datajig-wheel-smoke/bin/python - <<'PY'
           import json
