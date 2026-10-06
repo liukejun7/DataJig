@@ -30,6 +30,7 @@ mod tabular_inspect;
 mod tabular_source;
 mod training_bundle;
 mod training_consumption;
+mod transform;
 mod tutorial;
 mod workspace;
 mod workspace_store;
@@ -155,6 +156,16 @@ pub use training_consumption::{
     TRAINING_CONSUMPTION_PLAN_SCHEMA_VERSION, TRAINING_CONSUMPTION_RECEIPT_SCHEMA_VERSION,
     TrainingConsumptionPlanArtifact, TrainingConsumptionRuntime, inspect_training_consumption,
     plan_training_consumption,
+};
+pub use transform::{
+    MAX_TRANSFORM_INPUTS, MAX_TRANSFORM_OUTPUT_BYTES, MAX_TRANSFORM_OUTPUT_FIELDS,
+    MAX_TRANSFORM_OUTPUT_ROWS, MAX_TRANSFORM_PARAMETER_BYTES, MAX_TRANSFORM_PARAMETERS,
+    MAX_TRANSFORM_PLAN_BYTES, MAX_TRANSFORM_RECEIPT_BYTES, MAX_TRANSFORM_SOURCE_BYTES,
+    MAX_TRANSFORM_SOURCE_ROWS, MAX_TRANSFORM_SQL_BYTES, TRANSFORM_PLAN_SCHEMA_VERSION,
+    TRANSFORM_PROVIDER_PROTOCOL_VERSION, TRANSFORM_RECEIPT_SCHEMA_VERSION,
+    TransformExecutionEvidence, TransformExpectedOutput, TransformField, TransformLimits,
+    TransformPlan, TransformPlanInput, TransformProviderIdentity, TransformReceipt,
+    TransformSource, TransformSourceFormat,
 };
 pub use tutorial::{TutorialArtifact, run_tutorial};
 #[cfg(unix)]
