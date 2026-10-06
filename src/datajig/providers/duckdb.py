@@ -219,6 +219,7 @@ def _configure_runtime(
     settings: list[tuple[str, object]] = [
         ("temp_directory", str(resolved)),
         ("memory_limit", f"{memory_bytes}B"),
+        ("max_temp_directory_size", f"{memory_bytes}B"),
         ("threads", 1),
         ("autoinstall_known_extensions", False),
         ("autoload_known_extensions", False),
@@ -240,6 +241,14 @@ def _configure_runtime(
             observed = connection.execute(f"SELECT current_setting('{name}')").fetchmany(1)[0][0]
             if observed != value:
                 _fail("PROVIDER_INCOMPATIBLE", "DuckDB did not apply a required lockdown setting.")
+        memory_limit = connection.execute(
+            "SELECT current_setting('memory_limit')"
+        ).fetchmany(1)[0][0]
+        spill_limit = connection.execute(
+            "SELECT current_setting('max_temp_directory_size')"
+        ).fetchmany(1)[0][0]
+        if not isinstance(memory_limit, str) or spill_limit != memory_limit:
+            _fail("PROVIDER_INCOMPATIBLE", "DuckDB did not apply the bounded spill quota.")
         if connection.execute("SELECT count(*) FROM duckdb_secrets()").fetchmany(1)[0][0] != 0:
             _fail("PROVIDER_INCOMPATIBLE", "DuckDB contains an unexpected secret.")
         databases = connection.execute("PRAGMA database_list").fetchmany(2)

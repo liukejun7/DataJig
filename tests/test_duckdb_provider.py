@@ -208,7 +208,8 @@ class DuckDbProviderTest(unittest.TestCase):
                 "expected_provider": identity,
                 "sources": [_source("events", source, "csv", 2)],
                 "sql": (
-                    "SELECT id, value, current_setting('memory_limit') AS memory_limit "
+                    "SELECT id, value, current_setting('memory_limit') AS memory_limit, "
+                    "current_setting('max_temp_directory_size') AS temp_limit "
                     "FROM events WHERE id = ? ORDER BY id"
                 ),
                 "parameters": ["2"],
@@ -224,7 +225,8 @@ class DuckDbProviderTest(unittest.TestCase):
             self.assertEqual(identity, response["provider"])
             self.assertNotIn("records", response)
             self.assertEqual(
-                '{"id":"2","value":"beta","memory_limit":"64.0 MiB"}\n',
+                '{"id":"2","value":"beta","memory_limit":"64.0 MiB",'
+                '"temp_limit":"64.0 MiB"}\n',
                 candidate.read_text(encoding="utf-8"),
             )
 
