@@ -354,8 +354,9 @@ one `SELECT` over declared aliases and scalar parameters. It rejects table
 functions and arbitrary file access, `COPY`, `ATTACH`, extension loading,
 network access, multiple statements, unknown or volatile functions, and
 undeclared relations. Multi-row output must end its top-level `ORDER BY` with
-the ID field. Output supports null, boolean, signed and unsigned integer,
-finite double, and UTF-8 string values; IDs must be non-null and unique.
+the ID field. Output fields support nullable values with boolean, signed and
+unsigned integer, finite double, or UTF-8 string types; IDs must be non-null
+and unique.
 
 Protocol v1 allows at most 16 inputs, 2,000,000 source and output rows, 512 MiB
 of source and output bytes, 256 output fields and parameters, 64 KiB of SQL and

@@ -1,3 +1,4 @@
+use crate::io::publish_new_noreplace;
 use crate::jsonl_inspect::jsonl_record_id_digest;
 use crate::prepare::MAX_OUTPUT_LINE_BYTES;
 use crate::strict_json::reject_duplicate_json_members;
@@ -50,7 +51,7 @@ impl fmt::Display for TransformOutputError {
 
 impl Error for TransformOutputError {}
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct VerifiedTransformOutput {
     pub schema: Vec<TransformField>,
     pub rows: u64,
@@ -58,11 +59,34 @@ pub struct VerifiedTransformOutput {
     pub unique_ids: u64,
     pub output_content_id: String,
     canonical_path: PathBuf,
+    canonical_file: Option<File>,
 }
 
 impl VerifiedTransformOutput {
     pub fn canonical_path(&self) -> &Path {
         &self.canonical_path
+    }
+
+    pub fn publish_new(&self, output: &Path) -> Result<()> {
+        let pinned = self
+            .canonical_file
+            .as_ref()
+            .context("verified transform output is read-only")?;
+        pinned.sync_all()?;
+        ensure_same_file(pinned, &open_regular_file_nofollow(&self.canonical_path)?)
+            .context("canonical transform output changed after verification")?;
+        publish_new_noreplace(&self.canonical_path, output)
+            .context("cannot atomically publish transform output")?;
+        let published_matches = open_regular_file_nofollow(output)
+            .and_then(|file| ensure_same_file(pinned, &file))
+            .is_ok();
+        if !published_matches {
+            let _ = fs::remove_file(output);
+            return Err(anyhow::anyhow!(
+                "published transform output changed after verification"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -122,11 +146,20 @@ fn verify_transform_candidate_mode(
             "transform candidate exceeds the output byte limit",
         ));
     }
-    let source = File::open(candidate).context("cannot open transform provider candidate")?;
+    let source = open_regular_file_nofollow(candidate)
+        .context("cannot open transform provider candidate without following symlinks")?;
+    if source.metadata()?.len() > limits.output_bytes {
+        return Err(output_error(
+            TransformOutputErrorKind::OutputLimit,
+            "transform candidate exceeds the output byte limit",
+        ));
+    }
     let mut reader = BufReader::new(source);
     let mut guard = None;
+    let mut canonical_file = None;
     let mut writer: Box<dyn Write> = if write_canonical {
         let output = create_private_file(canonical)?;
+        canonical_file = Some(output.try_clone()?);
         guard = Some(CanonicalGuard::new(canonical));
         Box::new(BufWriter::new(output))
     } else {
@@ -237,8 +270,8 @@ fn verify_transform_candidate_mode(
     }
     writer.flush()?;
     drop(writer);
-    if write_canonical {
-        File::open(canonical)?.sync_all()?;
+    if let Some(file) = &canonical_file {
+        file.sync_all()?;
     }
     if let Some(guard) = &mut guard {
         guard.keep();
@@ -250,7 +283,41 @@ fn verify_transform_candidate_mode(
         unique_ids: ids.len() as u64,
         output_content_id: format!("prepared_{}", hasher.finalize().to_hex()),
         canonical_path: canonical.to_owned(),
+        canonical_file,
     })
+}
+
+#[cfg(unix)]
+fn open_regular_file_nofollow(path: &Path) -> std::io::Result<File> {
+    let descriptor = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )?;
+    let file = File::from(descriptor);
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn ensure_same_file(left: &File, right: &File) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let left = left.metadata()?;
+    let right = right.metadata()?;
+    if left.dev() == right.dev() && left.ino() == right.ino() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file identity changed",
+        ))
+    }
 }
 
 fn validate_schema(

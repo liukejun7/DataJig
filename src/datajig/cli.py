@@ -283,6 +283,16 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_apply_parser.add_argument("plan", type=Path)
     prepare_apply_parser.add_argument("--accept-plan", required=True)
 
+    subparsers.add_parser(
+        "transform-plan", help="plan a bounded deterministic DuckDB transform"
+    )
+    subparsers.add_parser(
+        "transform-apply", help="apply one accepted transform plan atomically"
+    )
+    subparsers.add_parser(
+        "transform-info", help="inspect or verify a transform plan or receipt"
+    )
+
     seal_parser = subparsers.add_parser(
         "seal", help="promote a fresh passing review to last-good"
     )

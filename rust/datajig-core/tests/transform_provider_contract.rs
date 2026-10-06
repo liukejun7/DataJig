@@ -1,7 +1,8 @@
 use datajig_core::{
-    ProviderRequest, TransformInputSpec, TransformLimits, TransformProviderIdentity,
-    TransformProviderProtocolError, TransformProviderTimeoutError, TransformSourceFormat,
-    execute_transform_provider, probe_transform_provider, stage_transform_sources,
+    ProviderRequest, TransformInputSpec, TransformLimits, TransformProviderExecutionError,
+    TransformProviderIdentity, TransformProviderProtocolError, TransformProviderTimeoutError,
+    TransformSourceFormat, execute_transform_provider, probe_transform_provider,
+    stage_transform_sources,
 };
 use serde_json::json;
 use std::fs;
@@ -147,6 +148,27 @@ fn staging_rejects_symlinks_and_enforces_streamed_limits() {
             )
             .is_err()
         );
+
+        let real_parent = root.join("real-parent");
+        fs::create_dir(&real_parent).unwrap();
+        let nested = real_parent.join("nested.jsonl");
+        fs::write(&nested, "{\"id\":\"nested\"}\n").unwrap();
+        let parent_link = root.join("parent-link");
+        symlink(&real_parent, &parent_link).unwrap();
+        assert!(
+            stage_transform_sources(
+                &[TransformInputSpec::new(
+                    "events".into(),
+                    parent_link.join("nested.jsonl"),
+                    TransformSourceFormat::Jsonl,
+                )
+                .unwrap()],
+                &sandbox,
+                &TransformLimits::v1(),
+            )
+            .is_err(),
+            "every source path component must be opened without following symlinks"
+        );
     }
     let _ = fs::remove_dir_all(root);
 }
@@ -259,6 +281,81 @@ fn provider_process_rejects_malformed_mismatched_oversized_and_timeout() {
             .is_some()
     );
     assert!(started.elapsed() < Duration::from_secs(1));
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn provider_process_preserves_a_valid_structured_failure() {
+    let fixture = provider_fixture("structured-error");
+    let response = json!({
+        "protocol": "datajig.transform-provider.v1",
+        "protocol_version": 1,
+        "correlation_id": "corr-error",
+        "status": "error",
+        "error": {
+            "code": "SOURCE_DRIFT",
+            "message": "The staged source changed.",
+            "remediation": "Create a new plan."
+        }
+    });
+    let script = write_provider_script(
+        &fixture.root,
+        "structured-error.sh",
+        &format!(
+            "printf '%s\\n' '{}'\nexit 1\n",
+            shell_quote(&response.to_string())
+        ),
+    );
+    let error = execute_transform_provider(
+        &script,
+        &fixture.request("corr-error"),
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    let provider_error = error
+        .downcast_ref::<TransformProviderExecutionError>()
+        .expect("structured provider error should be preserved");
+    assert_eq!("SOURCE_DRIFT", provider_error.code());
+    assert_eq!("Create a new plan.", provider_error.remediation());
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn successful_provider_descendants_are_terminated_before_stream_join() {
+    let fixture = provider_fixture("success-descendant");
+    let response = json!({
+        "protocol": "datajig.transform-provider.v1",
+        "protocol_version": 1,
+        "correlation_id": "corr-descendant",
+        "status": "ok",
+        "provider": provider(),
+        "schema": [],
+        "rows": 0,
+        "bytes": 0,
+        "candidate_complete": true
+    });
+    let script = write_provider_script(
+        &fixture.root,
+        "success-descendant.sh",
+        &format!(
+            "sleep 2 &\nprintf '{{}}\\n' > '{}'\nprintf '%s\\n' '{}'\n",
+            fixture.candidate.display(),
+            shell_quote(&response.to_string())
+        ),
+    );
+
+    let started = Instant::now();
+    execute_transform_provider(
+        &script,
+        &fixture.request("corr-descendant"),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "successful completion must kill descendants holding protocol pipes"
+    );
     let _ = fs::remove_dir_all(fixture.root);
 }
 

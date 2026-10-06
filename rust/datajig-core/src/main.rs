@@ -10,13 +10,14 @@ use datajig_core::{
     RepositoryComponents, RepositoryConflictError, RevisionContentCorruptError,
     RevisionContentUnavailableError, Severity, StaleConsumptionInputError, StalePrepareInputError,
     TrainingExportConfig, TransformDriftError, TransformInputSpec, TransformNotAuthorizedError,
-    TransformProviderProtocolError, TransformProviderTimeoutError, TransformSourceFormat,
-    UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError, WorkspaceLock, WorkspaceStore,
-    agent_contract_id, apply_hf_import, apply_jsonl_patch, apply_prepare, apply_transform,
-    artifact_schema, artifact_schema_names, begin_changeset, check_changeset, check_repository,
-    check_subset_view, check_workspace, command_catalog, command_descriptor, command_names,
-    compact_summary, create_inventory, create_review, create_snapshot, diff_jsonl_records,
-    diff_manifests, draft_jsonl_patch, export_training_bundle_with_view_at_revision, get_finding,
+    TransformProviderExecutionError, TransformProviderProtocolError, TransformProviderTimeoutError,
+    TransformSourceFormat, UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError,
+    WorkspaceLock, WorkspaceStore, agent_contract_id, apply_hf_import, apply_jsonl_patch,
+    apply_prepare, artifact_schema, artifact_schema_names, begin_changeset, check_changeset,
+    check_repository, check_subset_view, check_workspace, command_catalog, command_descriptor,
+    command_names, compact_summary, create_inventory, create_review, create_snapshot,
+    diff_jsonl_records, diff_manifests, draft_jsonl_patch,
+    export_training_bundle_with_view_at_revision, get_finding,
     initialize_jsonl_workspace_with_receipt, initialize_workspace, inspect_jsonl, inspect_tabular,
     inspect_training_bundle_with_consumer, inspect_training_consumption, inspect_transform,
     install_repository, is_patchable_quality_code, list_findings, load_manifest, load_report,
@@ -920,14 +921,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             );
             object.insert(
                 "transform_output_scalar_types".into(),
-                json!([
-                    "null",
-                    "boolean",
-                    "integer",
-                    "unsigned_integer",
-                    "double",
-                    "string"
-                ]),
+                json!(["boolean", "integer", "unsigned_integer", "double", "string"]),
             );
             object.insert(
                 "transform_provider".into(),
@@ -1761,9 +1755,13 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             );
         }
         Command::TransformApply { plan, accept_plan } => {
-            let python = transform_provider_python()?;
-            let artifact =
-                apply_transform(&plan, &accept_plan, &python).map_err(transform_command_error)?;
+            let python = std::env::var_os("_DATAJIG_PROVIDER_PYTHON").map(PathBuf::from);
+            let artifact = datajig_core::apply_transform_with_optional_provider(
+                &plan,
+                &accept_plan,
+                python.as_deref(),
+            )
+            .map_err(transform_command_error)?;
             println!(
                 "{}",
                 json!({
@@ -2294,7 +2292,18 @@ fn transform_provider_python() -> Result<PathBuf, CommandError> {
 }
 
 fn transform_command_error(error: anyhow::Error) -> CommandError {
-    let code = if error
+    let code = if let Some(provider) = error.downcast_ref::<TransformProviderExecutionError>() {
+        match provider.code() {
+            "PROVIDER_UNAVAILABLE" => "PROVIDER_UNAVAILABLE",
+            "PROVIDER_INCOMPATIBLE" | "PROVIDER_DRIFT" => "PROVIDER_INCOMPATIBLE",
+            "SOURCE_DRIFT" => "TRANSFORM_DRIFT",
+            "OUTPUT_LIMIT_EXCEEDED" => "OUTPUT_LIMIT_EXCEEDED",
+            "SOURCE_LOAD_FAILED" => "SOURCE_LOAD_FAILED",
+            "OUTPUT_SCHEMA_INVALID" => "OUTPUT_SCHEMA_INVALID",
+            "INVALID_REQUEST" | "PROTOCOL_MISMATCH" => "INVALID_ARGUMENT",
+            _ => "PROVIDER_EXECUTION_FAILED",
+        }
+    } else if error
         .downcast_ref::<TransformNotAuthorizedError>()
         .is_some()
     {
@@ -2311,6 +2320,11 @@ fn transform_command_error(error: anyhow::Error) -> CommandError {
         .is_some()
     {
         "PROVIDER_PROTOCOL_ERROR"
+    } else if error
+        .downcast_ref::<datajig_core::TransformProviderUnavailableError>()
+        .is_some()
+    {
+        "PROVIDER_UNAVAILABLE"
     } else if error.downcast_ref::<OutputExistsError>().is_some() {
         "OUTPUT_EXISTS"
     } else if error.downcast_ref::<InvalidArgumentError>().is_some() {
@@ -2702,7 +2716,12 @@ fn exit_with_error(
         )
     });
     let mut next_actions = Vec::<Value>::new();
-    if let Some(remediation) = source
+    if let Some(provider) =
+        source.and_then(|error| error.downcast_ref::<TransformProviderExecutionError>())
+    {
+        error["message"] = json!(provider.message());
+        error["remediation"] = json!({"summary": provider.remediation()});
+    } else if let Some(remediation) = source
         .and_then(|error| error.downcast_ref::<InvalidArgumentError>())
         .and_then(InvalidArgumentError::remediation)
     {

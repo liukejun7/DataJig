@@ -1,5 +1,5 @@
 use crate::identity::blake3_content_id;
-use crate::io::{publish_new_noreplace, save_new_file_atomically};
+use crate::io::save_new_file_atomically;
 use crate::{
     InvalidArgumentError, OutputExistsError, ProviderRequest, StagedTransformSource,
     TransformExecutionEvidence, TransformExpectedOutput, TransformInputSpec, TransformLimits,
@@ -46,6 +46,19 @@ impl fmt::Display for TransformDriftError {
 }
 
 impl Error for TransformDriftError {}
+
+#[derive(Debug)]
+pub struct TransformProviderUnavailableError;
+
+impl fmt::Display for TransformProviderUnavailableError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(
+            "the DuckDB provider is required to execute this plan; install with pip install 'datajig[duckdb]' and invoke the datajig Python entrypoint",
+        )
+    }
+}
+
+impl Error for TransformProviderUnavailableError {}
 
 #[derive(Clone, Debug)]
 pub struct TransformPlanRequest {
@@ -121,6 +134,13 @@ pub fn plan_transform(request: TransformPlanRequest) -> Result<TransformPlanArti
             InvalidArgumentError::new("transform plan and output paths must be different").into(),
         );
     }
+    let receipt_path = transform_receipt_path(&output_path);
+    if plan_path == receipt_path || fs::symlink_metadata(&receipt_path).is_ok() {
+        return Err(InvalidArgumentError::new(
+            "transform plan path cannot occupy the output receipt path",
+        )
+        .into());
+    }
     let (sql_path, sql) = read_sql(&request.sql_path, &limits)?;
     let sandbox = Sandbox::create(parent_of(&plan_path)?)?;
     let run = run_transform(
@@ -165,6 +185,14 @@ pub fn apply_transform(
     accept_plan: &str,
     python: &Path,
 ) -> Result<TransformApplyArtifact> {
+    apply_transform_with_optional_provider(plan_path, accept_plan, Some(python))
+}
+
+pub fn apply_transform_with_optional_provider(
+    plan_path: &Path,
+    accept_plan: &str,
+    python: Option<&Path>,
+) -> Result<TransformApplyArtifact> {
     let plan = TransformPlan::from_path(plan_path)?;
     if plan.plan_id() != accept_plan {
         return Err(TransformNotAuthorizedError.into());
@@ -195,6 +223,7 @@ pub fn apply_transform(
     if receipt_exists {
         return Err(OutputExistsError.into());
     }
+    let python = python.ok_or(TransformProviderUnavailableError)?;
 
     let inputs = plan
         .sources()
@@ -234,9 +263,7 @@ pub fn apply_transform(
         );
     }
     let receipt = receipt_for_verified(&plan, &run.verified)?;
-    File::open(run.verified.canonical_path())?.sync_all()?;
-    publish_new_noreplace(run.verified.canonical_path(), &output)
-        .context("cannot atomically publish transform output")?;
+    run.verified.publish_new(&output)?;
     File::open(parent_of(&output)?)?.sync_all()?;
     if let Err(error) = save_receipt(&receipt_path, &receipt) {
         return Err(error).context(
@@ -310,7 +337,36 @@ pub fn verify_transform_receipt(
         )
         .into());
     }
-    verify_receipt_output(&receipt)?;
+    verify_receipt_candidate(&receipt, &output)?;
+    Ok(VerifiedTransformReceipt {
+        receipt,
+        receipt_path,
+    })
+}
+
+pub(crate) fn verify_transform_receipt_snapshot(
+    receipt_path: &Path,
+    bound_output: &Path,
+    snapshot: &Path,
+    id_field: &str,
+) -> Result<VerifiedTransformReceipt> {
+    let receipt_path = receipt_path
+        .canonicalize()
+        .context("cannot resolve transform receipt")?;
+    let bound_output = bound_output
+        .canonicalize()
+        .context("cannot resolve transform receipt output")?;
+    let receipt = TransformReceipt::from_path(&receipt_path)?;
+    let receipt_output = Path::new(receipt.output_path())
+        .canonicalize()
+        .context("cannot resolve output bound by transform receipt")?;
+    if receipt_output != bound_output || receipt.id_field() != id_field {
+        return Err(TransformDriftError::new(
+            "transform receipt does not bind this output path and ID field",
+        )
+        .into());
+    }
+    verify_receipt_candidate(&receipt, snapshot)?;
     Ok(VerifiedTransformReceipt {
         receipt,
         receipt_path,
@@ -396,7 +452,10 @@ fn verify_existing_output(plan: &TransformPlan) -> Result<VerifiedTransformOutpu
 }
 
 fn verify_receipt_output(receipt: &TransformReceipt) -> Result<()> {
-    let output = Path::new(receipt.output_path());
+    verify_receipt_candidate(receipt, Path::new(receipt.output_path()))
+}
+
+fn verify_receipt_candidate(receipt: &TransformReceipt, output: &Path) -> Result<()> {
     let limits = TransformLimits::v1();
     let verified = verify_transform_candidate_read_only(
         output,

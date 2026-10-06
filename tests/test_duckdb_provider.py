@@ -147,7 +147,7 @@ class DuckDbProviderTest(unittest.TestCase):
             temp = root / "temp"
             temp.mkdir()
             connection = duckdb.connect(":memory:")
-            provider._lockdown(connection, temp)
+            provider._lockdown(connection, temp, 512 * 1024 * 1024)
             expected = {
                 "enable_external_access": False,
                 "autoinstall_known_extensions": False,
@@ -207,12 +207,15 @@ class DuckDbProviderTest(unittest.TestCase):
                 "operation": "execute",
                 "expected_provider": identity,
                 "sources": [_source("events", source, "csv", 2)],
-                "sql": "SELECT id, value FROM events WHERE id = ? ORDER BY id",
+                "sql": (
+                    "SELECT id, value, current_setting('memory_limit') AS memory_limit "
+                    "FROM events WHERE id = ? ORDER BY id"
+                ),
                 "parameters": ["2"],
                 "id_field": "id",
                 "candidate_path": str(candidate),
                 "temp_directory": str(temp),
-                "limits": _limits(),
+                "limits": {**_limits(), "duckdb_memory_bytes": 64 * 1024 * 1024},
                 "ast_policy_digest": "policy_test",
             }
             response = provider._handle_request(request)
@@ -220,7 +223,10 @@ class DuckDbProviderTest(unittest.TestCase):
             self.assertEqual("corr-test", response["correlation_id"])
             self.assertEqual(identity, response["provider"])
             self.assertNotIn("records", response)
-            self.assertEqual('{"id":"2","value":"beta"}\n', candidate.read_text(encoding="utf-8"))
+            self.assertEqual(
+                '{"id":"2","value":"beta","memory_limit":"64.0 MiB"}\n',
+                candidate.read_text(encoding="utf-8"),
+            )
 
     def test_missing_duckdb_is_a_structured_provider_error(self) -> None:
         with mock.patch.object(

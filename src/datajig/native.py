@@ -82,7 +82,7 @@ def run_native(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     if command in NATIVE_TRANSFORM_COMMANDS:
         native_environment["_DATAJIG_PROVIDER_PYTHON"] = os.path.abspath(sys.executable)
     requests_help = any(item in {"-h", "--help"} for item in args[1:])
-    if command in {"transform-plan", "transform-apply"} and not requests_help:
+    if command == "transform-plan" and not requests_help:
         _verify_transform_provider()
     try:
         _verify_native(binary, args, native_environment)

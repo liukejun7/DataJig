@@ -177,8 +177,8 @@ pub use transform_output::{
 };
 pub use transform_provider::{
     ProviderExecutionSummary, ProviderRequest, StagedTransformSource, TransformInputSpec,
-    TransformProviderProtocolError, TransformProviderTimeoutError, execute_transform_provider,
-    probe_transform_provider, stage_transform_sources,
+    TransformProviderExecutionError, TransformProviderProtocolError, TransformProviderTimeoutError,
+    execute_transform_provider, probe_transform_provider, stage_transform_sources,
 };
 pub use transform_sql::{
     TransformOrderContract, TransformOrderError, TransformSqlParseError, TransformSqlPolicyError,
@@ -187,7 +187,8 @@ pub use transform_sql::{
 pub use transform_workflow::{
     TransformApplyArtifact, TransformDriftError, TransformInfoArtifact,
     TransformNotAuthorizedError, TransformPlanArtifact, TransformPlanRequest,
-    VerifiedTransformReceipt, apply_transform, inspect_transform, plan_transform,
+    TransformProviderUnavailableError, VerifiedTransformReceipt, apply_transform,
+    apply_transform_with_optional_provider, inspect_transform, plan_transform,
     verify_transform_receipt,
 };
 pub use tutorial::{TutorialArtifact, run_tutorial};

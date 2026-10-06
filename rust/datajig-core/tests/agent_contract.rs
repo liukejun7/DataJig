@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_2cae1e5feab56f7400248dd913013fb014ac4bfd72a83bb7bcf04c5f38b2f184", identities[0],
+        "contract_fec506c91d9ef41bf272cd1fef2b02dc236074d762ceaf28c3fac1e1913ccf86", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }
@@ -203,6 +203,10 @@ fn discovery_publishes_the_bounded_transform_contract() {
         capabilities["transform_source_formats"]
     );
     assert_eq!(json!(16), capabilities["transform_limits"]["inputs"]);
+    assert_eq!(
+        json!(["boolean", "integer", "unsigned_integer", "double", "string"]),
+        capabilities["transform_output_scalar_types"]
+    );
     assert_eq!(json!("duckdb"), capabilities["transform_provider"]["name"]);
     assert_eq!(
         json!("pip install 'datajig[duckdb]'"),

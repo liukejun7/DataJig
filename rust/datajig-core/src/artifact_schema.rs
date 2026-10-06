@@ -201,8 +201,8 @@ fn transform_source_schema() -> Value {
         &["alias", "path", "format", "bytes", "rows", "content_id"],
         json!({
             "alias":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"}, "path":nonempty_string(),
-            "format":{"enum":["csv","parquet","jsonl"]}, "bytes":{"type":"integer","minimum":1},
-            "rows":{"type":"integer","minimum":0}, "content_id":nonempty_string()
+            "format":{"enum":["csv","parquet","jsonl"]}, "bytes":bounded_integer(0, 536870912),
+            "rows":bounded_integer(0, 2000000), "content_id":nonempty_string()
         }),
     )
 }
@@ -249,28 +249,40 @@ fn transform_limits_schema() -> Value {
         "provider_stderr_bytes",
         "wall_time_seconds",
     ];
-    let properties = Value::Object(
-        names
-            .iter()
-            .map(|name| ((*name).into(), json!({"type":"integer","minimum":0})))
-            .collect(),
-    );
-    strict_object(&names, properties)
+    strict_object(
+        &names,
+        json!({
+            "inputs": bounded_integer(1, 16),
+            "source_bytes": bounded_integer(1, 536870912),
+            "source_rows": bounded_integer(1, 2000000),
+            "sql_bytes": bounded_integer(1, 65536),
+            "parameters": bounded_integer(0, 256),
+            "parameter_bytes": bounded_integer(1, 65536),
+            "output_rows": bounded_integer(1, 2000000),
+            "output_bytes": bounded_integer(1, 536870912),
+            "output_fields": bounded_integer(1, 256),
+            "fetch_batch_rows": bounded_integer(1, 65536),
+            "duckdb_memory_bytes": bounded_integer(1, 536870912),
+            "provider_stdout_bytes": bounded_integer(1, 1048576),
+            "provider_stderr_bytes": bounded_integer(1, 1048576),
+            "wall_time_seconds": bounded_integer(1, 900)
+        }),
+    )
 }
 
 fn transform_output_schema() -> Value {
     strict_object(
         &["schema", "rows", "bytes", "unique_ids", "output_content_id"],
         json!({
-            "schema":transform_fields_schema(), "rows":{"type":"integer","minimum":0}, "bytes":{"type":"integer","minimum":0},
-            "unique_ids":{"type":"integer","minimum":0}, "output_content_id":content_id_schema("prepared")
+            "schema":transform_fields_schema(), "rows":bounded_integer(0, 2000000), "bytes":bounded_integer(0, 536870912),
+            "unique_ids":bounded_integer(0, 2000000), "output_content_id":content_id_schema("prepared")
         }),
     )
 }
 
 fn transform_fields_schema() -> Value {
     json!({"type":"array","minItems":1,"maxItems":256,"items":strict_object(&["name","value_type","nullable"], json!({
-        "name":nonempty_string(), "value_type":{"enum":["null","boolean","integer","unsigned_integer","double","string"]}, "nullable":{"type":"boolean"}
+        "name":nonempty_string(), "value_type":{"enum":["boolean","integer","unsigned_integer","double","string"]}, "nullable":{"type":"boolean"}
     }))})
 }
 
@@ -280,6 +292,10 @@ fn strict_object(required: &[&str], properties: Value) -> Value {
 
 fn nonempty_string() -> Value {
     json!({"type":"string","minLength":1})
+}
+
+fn bounded_integer(minimum: u64, maximum: u64) -> Value {
+    json!({"type":"integer","minimum":minimum,"maximum":maximum})
 }
 
 fn content_id_schema(prefix: &str) -> Value {

@@ -208,7 +208,9 @@ def _load_sources(connection: _Connection, request: Mapping[str, object]) -> Non
             _fail("SOURCE_DRIFT", "A staged transform source row count changed before execution.")
 
 
-def _lockdown(connection: _Connection, sandbox: Path) -> None:
+def _configure_runtime(
+    connection: _Connection, sandbox: Path, memory_bytes: int
+) -> Path:
     if sandbox.is_symlink():
         _fail("INVALID_REQUEST", "The provider temp directory is invalid.")
     resolved = sandbox.resolve(strict=True)
@@ -216,13 +218,12 @@ def _lockdown(connection: _Connection, sandbox: Path) -> None:
         _fail("INVALID_REQUEST", "The provider temp directory is invalid.")
     settings: list[tuple[str, object]] = [
         ("temp_directory", str(resolved)),
-        ("memory_limit", "512MiB"),
+        ("memory_limit", f"{memory_bytes}B"),
         ("threads", 1),
         ("autoinstall_known_extensions", False),
         ("autoload_known_extensions", False),
         ("allow_persistent_secrets", False),
         ("python_enable_replacements", False),
-        ("enable_external_access", False),
     ]
     try:
         for name, value in settings:
@@ -234,21 +235,17 @@ def _lockdown(connection: _Connection, sandbox: Path) -> None:
             "autoload_known_extensions": False,
             "allow_persistent_secrets": False,
             "python_enable_replacements": False,
-            "enable_external_access": False,
         }
         for name, value in expected.items():
             observed = connection.execute(f"SELECT current_setting('{name}')").fetchmany(1)[0][0]
             if observed != value:
                 _fail("PROVIDER_INCOMPATIBLE", "DuckDB did not apply a required lockdown setting.")
-        memory = connection.execute("SELECT current_setting('memory_limit')").fetchmany(1)[0][0]
-        if memory != "512.0 MiB":
-            _fail("PROVIDER_INCOMPATIBLE", "DuckDB did not apply the required memory limit.")
         if connection.execute("SELECT count(*) FROM duckdb_secrets()").fetchmany(1)[0][0] != 0:
             _fail("PROVIDER_INCOMPATIBLE", "DuckDB contains an unexpected secret.")
         databases = connection.execute("PRAGMA database_list").fetchmany(2)
         if len(databases) != 1 or databases[0][1:] != ("memory", None):
             _fail("PROVIDER_INCOMPATIBLE", "DuckDB contains an unexpected attachment.")
-        connection.execute("SET lock_configuration = true")
+        return resolved
     except ProviderError:
         raise
     except Exception as error:
@@ -257,6 +254,30 @@ def _lockdown(connection: _Connection, sandbox: Path) -> None:
             "DuckDB cannot enforce the required query lockdown.",
             "Install the tested provider with: pip install 'datajig[duckdb]'",
         ) from error
+
+
+def _seal_lockdown(connection: _Connection) -> None:
+    try:
+        connection.execute("SET enable_external_access = false")
+        observed = connection.execute(
+            "SELECT current_setting('enable_external_access')"
+        ).fetchmany(1)[0][0]
+        if observed is not False:
+            _fail("PROVIDER_INCOMPATIBLE", "DuckDB did not disable external access.")
+        connection.execute("SET lock_configuration = true")
+    except ProviderError:
+        raise
+    except Exception as error:
+        raise ProviderError(
+            "PROVIDER_INCOMPATIBLE",
+            "DuckDB cannot seal the required query lockdown.",
+            "Install the tested provider with: pip install 'datajig[duckdb]'",
+        ) from error
+
+
+def _lockdown(connection: _Connection, sandbox: Path, memory_bytes: int) -> None:
+    _configure_runtime(connection, sandbox, memory_bytes)
+    _seal_lockdown(connection)
 
 
 def _stream_result(
@@ -360,7 +381,7 @@ def _handle_request(raw_request: object) -> dict[str, object]:
                 duckdb = _import_duckdb()
                 connection = cast(_Connection, duckdb.connect(":memory:"))
                 try:
-                    _lockdown(connection, Path(directory))
+                    _lockdown(connection, Path(directory), 512 * 1024 * 1024)
                 finally:
                     connection.close()
             return {
@@ -411,8 +432,9 @@ def _handle_request(raw_request: object) -> dict[str, object]:
         duckdb = _import_duckdb()
         connection = cast(_Connection, duckdb.connect(":memory:"))
         try:
+            _configure_runtime(connection, temp_directory, limits["duckdb_memory_bytes"])
             _load_sources(connection, request)
-            _lockdown(connection, temp_directory)
+            _seal_lockdown(connection)
             cursor = connection.execute(sql, parameters)
             result = _stream_result(
                 cursor,

@@ -2,6 +2,7 @@ use datajig_core::{
     ARTIFACT_SCHEMA_VERSION, JsonlPatchRequest, JsonlSubsetRecipe, RepositoryIntegrationLock,
     TransformPlan, TransformReceipt, artifact_schema, artifact_schema_names,
 };
+use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -47,6 +48,23 @@ fn published_transform_examples_are_accepted_by_strict_runtime_parsers() {
     parsed_receipt.expect("published transform receipt should remain executable");
     assert_eq!(false, plan["schema"]["additionalProperties"]);
     assert_eq!(false, receipt["schema"]["additionalProperties"]);
+    assert_eq!(
+        1,
+        plan["schema"]["properties"]["limits"]["properties"]["inputs"]["minimum"]
+    );
+    assert_eq!(
+        16,
+        plan["schema"]["properties"]["limits"]["properties"]["inputs"]["maximum"]
+    );
+    assert_eq!(
+        900,
+        plan["schema"]["properties"]["limits"]["properties"]["wall_time_seconds"]["maximum"]
+    );
+    assert_eq!(
+        json!(["boolean", "integer", "unsigned_integer", "double", "string"]),
+        plan["schema"]["properties"]["expected"]["properties"]["schema"]["items"]["properties"]["value_type"]
+            ["enum"]
+    );
 }
 
 #[test]

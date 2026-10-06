@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -31,6 +31,35 @@ impl fmt::Display for TransformProviderProtocolError {
 }
 
 impl Error for TransformProviderProtocolError {}
+
+#[derive(Debug)]
+pub struct TransformProviderExecutionError {
+    code: String,
+    message: String,
+    remediation: String,
+}
+
+impl TransformProviderExecutionError {
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub fn remediation(&self) -> &str {
+        &self.remediation
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for TransformProviderExecutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl Error for TransformProviderExecutionError {}
 
 #[derive(Debug)]
 pub struct TransformProviderTimeoutError;
@@ -113,32 +142,25 @@ pub fn stage_transform_sources(
             .into());
         }
     }
-    let originals = inputs
-        .iter()
-        .map(|input| {
-            input
-                .path
-                .canonicalize()
-                .context("cannot resolve transform input")
-        })
-        .collect::<Result<Vec<_>>>()?;
     let mut staged = Vec::with_capacity(inputs.len());
     let mut total_bytes = 0u64;
     let mut total_rows = 0u64;
-    for (index, (input, original)) in inputs.iter().zip(originals).enumerate() {
+    for (index, input) in inputs.iter().enumerate() {
         let name = format!(
             "{index:02}-{}.{}",
             input.alias,
             format_extension(input.format)
         );
         let destination = sandbox.join(name);
-        let (bytes, content_id) = match stage_regular_file(&input.path, &destination) {
-            Ok(result) => result,
-            Err(error) => {
-                cleanup_staged(&staged, Some(&destination));
-                return Err(error);
-            }
-        };
+        let remaining_bytes = limits.source_bytes.saturating_sub(total_bytes);
+        let (bytes, content_id, original) =
+            match stage_regular_file(&input.path, &destination, remaining_bytes) {
+                Ok(result) => result,
+                Err(error) => {
+                    cleanup_staged(&staged, Some(&destination));
+                    return Err(error);
+                }
+            };
         let prepared = (|| -> Result<(u64, u64, TransformSource)> {
             let next_bytes = total_bytes
                 .checked_add(bytes)
@@ -348,6 +370,24 @@ struct ProviderProbeResponse {
     lockdown_supported: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderErrorDetails {
+    code: String,
+    message: String,
+    remediation: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderErrorResponse {
+    protocol: String,
+    protocol_version: u8,
+    correlation_id: String,
+    status: String,
+    error: ProviderErrorDetails,
+}
+
 #[derive(Clone, Debug)]
 pub struct ProviderExecutionSummary {
     pub schema: Vec<TransformField>,
@@ -372,11 +412,11 @@ pub fn probe_transform_provider(
     let mut child = command
         .spawn()
         .context("cannot start transform provider probe")?;
-    child
+    let mut stdin = child
         .stdin
         .take()
-        .context("transform provider stdin is unavailable")?
-        .write_all(&payload)?;
+        .context("transform provider stdin is unavailable")?;
+    let stdin_writer = thread::spawn(move || stdin.write_all(&payload));
     let stdout = child.stdout.take().context("provider stdout unavailable")?;
     let stderr = child.stderr.take().context("provider stderr unavailable")?;
     let stdout_limit = limits.provider_stdout_bytes;
@@ -391,20 +431,27 @@ pub fn probe_transform_provider(
         if Instant::now() >= deadline {
             terminate_provider_tree(&mut child);
             let _ = child.wait();
+            let _ = stdin_writer.join();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             return Err(TransformProviderTimeoutError.into());
         }
         thread::sleep(Duration::from_millis(5));
     };
-    let stdout = join_reader(stdout_reader)?;
-    let stderr = join_reader(stderr_reader)?;
+    terminate_provider_tree(&mut child);
+    let writer = join_writer(stdin_writer);
+    let stdout = join_reader(stdout_reader);
+    let stderr = join_reader(stderr_reader);
+    writer?;
+    let stdout = stdout?;
+    let stderr = stderr?;
     if !status.success() {
-        return Err(TransformProviderProtocolError(format!(
-            "provider probe exited unsuccessfully (diagnostic bytes: {})",
-            stderr.len()
-        ))
-        .into());
+        return Err(provider_failure(
+            &stdout,
+            "probe",
+            "provider probe",
+            stderr.len(),
+        ));
     }
     let text = std::str::from_utf8(&stdout)
         .map_err(|_| TransformProviderProtocolError("probe stdout is not UTF-8".into()))?;
@@ -437,11 +484,11 @@ pub fn execute_transform_provider(
     let before = directory_entries(parent_of(Path::new(&request.candidate_path))?)?;
     let mut command = provider_command(&python);
     let mut child = command.spawn().context("cannot start transform provider")?;
-    child
+    let mut stdin = child
         .stdin
         .take()
-        .context("transform provider stdin is unavailable")?
-        .write_all(request_payload.as_bytes())?;
+        .context("transform provider stdin is unavailable")?;
+    let stdin_writer = thread::spawn(move || stdin.write_all(request_payload.as_bytes()));
     let stdout = child.stdout.take().context("provider stdout unavailable")?;
     let stderr = child.stderr.take().context("provider stderr unavailable")?;
     let stdout_limit = request.limits.provider_stdout_bytes;
@@ -456,6 +503,7 @@ pub fn execute_transform_provider(
         if Instant::now() >= deadline {
             terminate_provider_tree(&mut child);
             let _ = child.wait();
+            let _ = stdin_writer.join();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             cleanup_candidate(request);
@@ -463,15 +511,28 @@ pub fn execute_transform_provider(
         }
         thread::sleep(Duration::from_millis(5));
     };
-    let stdout = join_reader(stdout_reader)?;
-    let stderr = join_reader(stderr_reader)?;
+    terminate_provider_tree(&mut child);
+    let writer = join_writer(stdin_writer);
+    let stdout = join_reader(stdout_reader);
+    let stderr = join_reader(stderr_reader);
+    if let Err(error) = writer {
+        cleanup_candidate(request);
+        return Err(error);
+    }
+    let stdout = stdout.inspect_err(|_| {
+        cleanup_candidate(request);
+    })?;
+    let stderr = stderr.inspect_err(|_| {
+        cleanup_candidate(request);
+    })?;
     if !status.success() {
         cleanup_candidate(request);
-        return Err(TransformProviderProtocolError(format!(
-            "provider exited unsuccessfully (diagnostic bytes: {})",
-            stderr.len()
-        ))
-        .into());
+        return Err(provider_failure(
+            &stdout,
+            &request.correlation_id,
+            "provider",
+            stderr.len(),
+        ));
     }
     let text = std::str::from_utf8(&stdout)
         .map_err(|_| TransformProviderProtocolError("stdout is not UTF-8".into()))?;
@@ -528,20 +589,20 @@ pub fn execute_transform_provider(
     })
 }
 
-fn stage_regular_file(source: &Path, destination: &Path) -> Result<(u64, String)> {
+fn stage_regular_file(
+    source: &Path,
+    destination: &Path,
+    maximum_bytes: u64,
+) -> Result<(u64, String, PathBuf)> {
     #[cfg(not(unix))]
     {
-        let _ = (source, destination);
+        let _ = (source, destination, maximum_bytes);
         anyhow::bail!("transform staging currently requires Unix")
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        let mut source_file = OpenOptions::new()
-            .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(source)
-            .context("cannot open transform input without following links")?;
+        let (mut source_file, source_path) = open_regular_file_no_symlinks(source)?;
         let before = source_file.metadata()?;
         if !before.is_file() {
             return Err(InvalidArgumentError::new("transform input must be a regular file").into());
@@ -566,6 +627,14 @@ fn stage_regular_file(source: &Path, destination: &Path) -> Result<(u64, String)
             bytes = bytes
                 .checked_add(read as u64)
                 .context("source size overflow")?;
+            if bytes > maximum_bytes {
+                drop(destination_file);
+                let _ = fs::remove_file(destination);
+                return Err(InvalidArgumentError::new(format!(
+                    "transform sources exceed {maximum_bytes} remaining bytes"
+                ))
+                .into());
+            }
         }
         destination_file.sync_all()?;
         let after = source_file.metadata()?;
@@ -583,8 +652,54 @@ fn stage_regular_file(source: &Path, destination: &Path) -> Result<(u64, String)
                 InvalidArgumentError::new("transform input changed while it was staged").into(),
             );
         }
-        Ok((bytes, format!("source_{}", hasher.finalize().to_hex())))
+        Ok((
+            bytes,
+            format!("source_{}", hasher.finalize().to_hex()),
+            source_path,
+        ))
     }
+}
+
+#[cfg(unix)]
+fn open_regular_file_no_symlinks(source: &Path) -> Result<(File, PathBuf)> {
+    use rustix::fs::{Mode, OFlags, openat};
+    use std::path::Component;
+
+    let absolute = if source.is_absolute() {
+        source.to_owned()
+    } else {
+        std::env::current_dir()?.join(source)
+    };
+    let names = absolute
+        .components()
+        .filter_map(|component| match component {
+            Component::RootDir | Component::CurDir => None,
+            Component::Normal(name) => Some(Ok(name.to_owned())),
+            Component::ParentDir | Component::Prefix(_) => Some(Err(InvalidArgumentError::new(
+                "transform input paths cannot contain parent traversal",
+            )
+            .into())),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if names.is_empty() {
+        return Err(InvalidArgumentError::new("transform input path is invalid").into());
+    }
+    let mut current = File::open("/").context("cannot open filesystem root")?;
+    for (index, name) in names.iter().enumerate() {
+        let final_component = index + 1 == names.len();
+        let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+        if !final_component {
+            flags |= OFlags::DIRECTORY;
+        }
+        let descriptor = openat(&current, name, flags, Mode::empty())
+            .map_err(std::io::Error::from)
+            .context("cannot open transform input without following path links")?;
+        current = File::from(descriptor);
+    }
+    if !current.metadata()?.is_file() {
+        return Err(InvalidArgumentError::new("transform input must be a regular file").into());
+    }
+    Ok((current, absolute))
 }
 
 struct RowCounter {
@@ -643,6 +758,46 @@ fn join_reader(handle: thread::JoinHandle<Result<Vec<u8>>>) -> Result<Vec<u8>> {
     handle
         .join()
         .map_err(|_| TransformProviderProtocolError("provider stream reader failed".into()))?
+}
+
+fn join_writer(handle: thread::JoinHandle<std::io::Result<()>>) -> Result<()> {
+    handle
+        .join()
+        .map_err(|_| TransformProviderProtocolError("provider stdin writer failed".into()))?
+        .context("cannot write bounded transform provider request")
+}
+
+fn provider_failure(
+    stdout: &[u8],
+    correlation_id: &str,
+    label: &str,
+    diagnostic_bytes: usize,
+) -> anyhow::Error {
+    let parsed = std::str::from_utf8(stdout)
+        .ok()
+        .filter(|text| reject_duplicate_json_members(text).is_ok())
+        .and_then(|text| serde_json::from_str::<ProviderErrorResponse>(text).ok());
+    if let Some(response) = parsed {
+        if response.protocol == PROVIDER_PROTOCOL
+            && response.protocol_version == 1
+            && response.correlation_id == correlation_id
+            && response.status == "error"
+            && !response.error.code.is_empty()
+            && !response.error.message.is_empty()
+            && !response.error.remediation.is_empty()
+        {
+            return TransformProviderExecutionError {
+                code: response.error.code,
+                message: response.error.message,
+                remediation: response.error.remediation,
+            }
+            .into();
+        }
+    }
+    TransformProviderProtocolError(format!(
+        "{label} exited unsuccessfully (diagnostic bytes: {diagnostic_bytes})"
+    ))
+    .into()
 }
 
 fn directory_entries(path: &Path) -> Result<BTreeSet<std::ffi::OsString>> {

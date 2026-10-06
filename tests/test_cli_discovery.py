@@ -23,8 +23,11 @@ class CliDiscoveryTests(unittest.TestCase):
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
         environment["DATAJIG_NATIVE"] = str(self.native)
+        arguments = ("python", "-m", "datajig.cli", "--help")
+        if command:
+            arguments = ("python", "-m", "datajig.cli", command, "--help")
         return subprocess.run(
-            ("python", "-m", "datajig.cli", command, "--help"),
+            arguments,
             cwd=REPOSITORY_ROOT,
             env=environment,
             text=True,
@@ -44,6 +47,13 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("NAME=WEIGHT", export.stdout)
         self.assertIn("basis-point", export.stdout)
         self.assertIn("--split train=7000 --split val=2000 --split test=1000", export.stdout)
+
+    def test_top_level_help_lists_transform_workflow(self) -> None:
+        completed = self.run_help("")
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("transform-plan", completed.stdout)
+        self.assertIn("transform-apply", completed.stdout)
+        self.assertIn("transform-info", completed.stdout)
 
 
 if __name__ == "__main__":

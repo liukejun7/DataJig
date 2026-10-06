@@ -17,9 +17,10 @@ use crate::{
     MAX_PAGE_SIZE, MAX_PHASH_THRESHOLD, MAX_REPORT_BYTES, PatchConflictError,
     PatchNotAuthorizedError, RecordChangesetSummary, RemediationPlanArtifact, ReviewReport,
     RevisionProvenance, TrainingBundleArtifact, TrainingExportConfig, TrainingSourceBinding,
-    UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError, WorkspaceStore,
-    build_jsonl_record_state, changed_record_ids, create_remediation_plan,
-    diff_jsonl_record_states, evaluate_jsonl_quality,
+    TransformInputSpec, TransformLimits, TransformSourceFormat, UndoNotFoundError,
+    UnstagedChangesError, WorkspaceBusyError, WorkspaceStore, build_jsonl_record_state,
+    changed_record_ids, create_remediation_plan, diff_jsonl_record_states, evaluate_jsonl_quality,
+    stage_transform_sources,
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -628,6 +629,75 @@ pub fn initialize_jsonl_workspace_with_policy(
     initialize_jsonl_workspace_with_receipt(dataset, state, id_field, policy_path, None)
 }
 
+struct JsonlDatasetSnapshot {
+    root: PathBuf,
+    path: PathBuf,
+}
+
+impl JsonlDatasetSnapshot {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for JsonlDatasetSnapshot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn snapshot_jsonl_dataset(dataset: &Path) -> Result<JsonlDatasetSnapshot> {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let parent = dataset
+        .parent()
+        .context("workspace JSONL dataset has no parent directory")?;
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let mut root = None;
+    for attempt in 0..32 {
+        let candidate = parent.join(format!(
+            ".datajig-snapshot-{}-{stamp}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&candidate) {
+            Ok(()) => {
+                #[cfg(unix)]
+                if let Err(error) =
+                    fs::set_permissions(&candidate, fs::Permissions::from_mode(0o700))
+                {
+                    let _ = fs::remove_dir(&candidate);
+                    return Err(error).context("cannot secure private dataset snapshot");
+                }
+                root = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error).context("cannot create private dataset snapshot"),
+        }
+    }
+    let root = root.context("cannot allocate private dataset snapshot")?;
+    let staged = stage_transform_sources(
+        &[TransformInputSpec::new(
+            "dataset".into(),
+            dataset.to_owned(),
+            TransformSourceFormat::Jsonl,
+        )?],
+        &root,
+        &TransformLimits::v1(),
+    );
+    match staged {
+        Ok(staged) => Ok(JsonlDatasetSnapshot {
+            path: staged[0].staged_path().to_owned(),
+            root,
+        }),
+        Err(error) => {
+            let _ = fs::remove_dir_all(root);
+            Err(error).context("cannot snapshot transform output for workspace initialization")
+        }
+    }
+}
+
 pub fn initialize_jsonl_workspace_with_receipt(
     dataset: &Path,
     state: &Path,
@@ -641,10 +711,21 @@ pub fn initialize_jsonl_workspace_with_receipt(
     if !dataset.is_file() {
         return Err(InvalidArgumentError::new("JSONL workspace dataset is not a file").into());
     }
+    let snapshot = source_receipt
+        .map(|_| snapshot_jsonl_dataset(&dataset))
+        .transpose()?;
+    let inspection_dataset = snapshot
+        .as_ref()
+        .map_or(dataset.as_path(), JsonlDatasetSnapshot::path);
     let transform_lineage = source_receipt
         .map(|receipt| {
-            crate::verify_transform_receipt(receipt, &dataset, id_field)
-                .and_then(|verified| crate::TransformLineage::from_verified_receipt(&verified))
+            crate::transform_workflow::verify_transform_receipt_snapshot(
+                receipt,
+                &dataset,
+                inspection_dataset,
+                id_field,
+            )
+            .and_then(|verified| crate::TransformLineage::from_verified_receipt(&verified))
         })
         .transpose()?;
     let state = safe_state_directory(state, &dataset)?;
@@ -652,7 +733,7 @@ pub fn initialize_jsonl_workspace_with_receipt(
     if state.join(WORKSPACE_FILE).exists() {
         return Err(InvalidArgumentError::new("workspace is already initialized").into());
     }
-    let built = build_jsonl_record_state(&dataset, id_field)?;
+    let built = build_jsonl_record_state(inspection_dataset, id_field)?;
     if built.state().finding_count() != 0 {
         return Err(InvalidArgumentError::new(
             "JSONL workspace baseline must pass inspection without findings",
@@ -665,7 +746,7 @@ pub fn initialize_jsonl_workspace_with_receipt(
     if let Some(policy) = &policy {
         let gated_ids = (policy.mode() == "changed_only").then(BTreeSet::new);
         let evaluation = evaluate_jsonl_quality(
-            &dataset,
+            inspection_dataset,
             id_field,
             built.state().dataset_content_id(),
             policy,
@@ -686,7 +767,7 @@ pub fn initialize_jsonl_workspace_with_receipt(
         .as_ref()
         .map(|policy| store.publish_jsonl_quality_policy(policy))
         .transpose()?;
-    store.publish_jsonl_blob(&dataset, built.state().dataset_content_id())?;
+    store.publish_jsonl_blob(inspection_dataset, built.state().dataset_content_id())?;
     let revision = if state.join("refs.json").exists() {
         let refs = store.load_refs()?;
         let existing = store.load_revision(refs.head())?;

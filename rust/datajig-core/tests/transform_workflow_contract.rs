@@ -6,7 +6,7 @@ use datajig_core::{
     TransformExpectedOutput, TransformField, TransformInputSpec, TransformLimits, TransformLineage,
     TransformOutputError, TransformOutputErrorKind, TransformPlan, TransformPlanInput,
     TransformPlanRequest, TransformProviderIdentity, TransformReceipt, TransformSource,
-    TransformSourceFormat, WorkspaceStore, apply_transform,
+    TransformSourceFormat, WorkspaceStore, apply_transform, apply_transform_with_optional_provider,
     initialize_jsonl_workspace_with_receipt, inspect_transform, plan_transform,
     verify_transform_candidate, verify_transform_receipt,
 };
@@ -220,6 +220,31 @@ fn output_verifier_canonicalizes_every_supported_scalar() {
 }
 
 #[test]
+fn verified_output_rejects_canonical_path_replacement_before_publication() {
+    let root = temporary_path("canonical-replacement");
+    fs::create_dir_all(&root).unwrap();
+    let candidate = root.join("candidate.jsonl");
+    let canonical = root.join("canonical.jsonl");
+    let output = root.join("published.jsonl");
+    fs::write(&candidate, "{\"id\":1}\n").unwrap();
+    let verified = verify_transform_candidate(
+        &candidate,
+        &canonical,
+        "id",
+        &[field("id", "integer", false)],
+        &TransformLimits::v1(),
+    )
+    .unwrap();
+
+    fs::remove_file(&canonical).unwrap();
+    fs::write(&canonical, "{\"id\":2}\n").unwrap();
+    let error = verified.publish_new(&output).unwrap_err().to_string();
+    assert!(error.contains("changed after verification"), "{error}");
+    assert!(!output.exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn output_verifier_rejects_schema_type_and_malformed_rows_without_artifacts() {
     let cases = [
         (
@@ -405,13 +430,15 @@ fn workflow_plan_apply_info_is_deterministic_and_recoverable() {
     let output_before = fs::read(&fixture.output).unwrap();
     let receipt_before = fs::read(fixture.receipt()).unwrap();
 
-    let idempotent = apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    let idempotent =
+        apply_transform_with_optional_provider(&fixture.plan, &planned.plan_id, None).unwrap();
     assert!(idempotent.already_applied);
     assert_eq!(output_before, fs::read(&fixture.output).unwrap());
     assert_eq!(receipt_before, fs::read(fixture.receipt()).unwrap());
 
     fs::remove_file(fixture.receipt()).unwrap();
-    let recovered = apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    let recovered =
+        apply_transform_with_optional_provider(&fixture.plan, &planned.plan_id, None).unwrap();
     assert!(recovered.recovered);
     assert!(!recovered.already_applied);
     assert_eq!(output_before, fs::read(&fixture.output).unwrap());
@@ -438,6 +465,22 @@ fn workflow_apply_rejects_drift_and_collisions_without_partial_public_state() {
         fs::read_to_string(&fixture.output).unwrap()
     );
     assert!(!fixture.receipt().exists());
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn workflow_plan_rejects_the_reserved_receipt_path() {
+    let mut fixture = workflow_fixture("receipt-path");
+    fixture.plan = fixture.receipt();
+    let error = plan_transform(fixture.request()).unwrap_err();
+    assert!(error.to_string().contains("receipt path"));
+    assert!(!fixture.plan.exists());
+
+    fixture.plan = fixture.root.join("safe-plan.json");
+    fs::write(fixture.receipt(), "reserved").unwrap();
+    let error = plan_transform(fixture.request()).unwrap_err();
+    assert!(error.to_string().contains("receipt path"));
+    assert!(!fixture.plan.exists());
     let _ = fs::remove_dir_all(fixture.root);
 }
 
