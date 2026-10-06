@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DataJig — {{ status }}</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#657087; --line:#dfe4ec; --bg:#f5f7fb; --card:#fff; --error:#b42318; --warning:#b54708; --info:#175cd3; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,sans-serif; }
+    main { max-width:1180px; margin:auto; padding:32px 20px 64px; } section { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:20px; margin:16px 0; }
+    h1,h2,h3,p { margin-top:0; } .decision { display:flex; justify-content:space-between; gap:20px; align-items:center; }
+    .status { font-size:28px; font-weight:800; } .status.fail,.status.incomplete { color:var(--error); } .status.warn { color:var(--warning); } .status.pass { color:#067647; }
+    .muted { color:var(--muted); } .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+    .metric { padding:14px; border-radius:10px; background:#f8fafc; } .metric strong { display:block; font-size:24px; }
+    .finding { border-left:4px solid var(--info); padding:12px 14px; margin:10px 0; background:#fafbfc; } .finding.error { border-color:var(--error); } .finding.warning { border-color:var(--warning); }
+    .code { font:600 12px ui-monospace,monospace; } .samples { color:var(--muted); word-break:break-word; }
+    table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:9px; border-bottom:1px solid var(--line); }
+    .representatives { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; } .sample { border:1px solid var(--line); border-radius:10px; padding:10px; overflow:hidden; }
+    .sample img { width:100%; height:140px; object-fit:contain; background:#eef1f6; } .filters { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; } button { border:1px solid var(--line); border-radius:999px; padding:7px 12px; background:white; cursor:pointer; }
+    #incomplete-banner { border-color:#fda29b; background:#fff1f0; color:var(--error); font-weight:700; }
+  </style>
+</head>
+<body>
+<main>
+  {% if not complete %}<section id="incomplete-banner">INCOMPLETE — one or more analyzers did not finish; this review cannot pass.</section>{% endif %}
+  <section id="decision" class="decision">
+    <div><p class="muted">{{ baseline_name }} → {{ candidate_name }}</p><h1>Dataset review</h1><p>This self-contained report may include source thumbnails and should be treated as a dataset artifact.</p></div>
+    <div class="status {{ status_class }}">{{ status }}</div>
+  </section>
+  <section id="headline-counts"><h2>Headline counts</h2><div class="grid">
+    <div class="metric"><strong>{{ headline.added }}</strong>Added</div><div class="metric"><strong>{{ headline.removed }}</strong>Removed</div>
+    <div class="metric"><strong>{{ headline.leakage }}</strong>Leakage candidates</div><div class="metric"><strong>{{ headline.exact_matches }}</strong>Exact matches</div>
+    <div class="metric"><strong>{{ headline.probable_matches }}</strong>Probable matches</div>
+  </div></section>
+  <section id="highest-risk"><h2>Highest-risk findings</h2>
+    {% if policy_failures %}<p><strong>Policy failures:</strong> {{ policy_failures|join(', ') }}</p>{% endif %}
+    {% if policy_warnings %}<p><strong>Policy warnings:</strong> {{ policy_warnings|join(', ') }}</p>{% endif %}
+    {% for finding in risk_findings %}<article class="finding {{ finding.severity }}"><div class="code">{{ finding.code }}</div><div>{{ finding.message }}</div><div class="samples">{{ finding.sample_ids|join(' · ') }}</div></article>{% else %}<p>No error or warning findings.</p>{% endfor %}
+  </section>
+  <section id="distribution-changes"><h2>Distribution changes</h2><table><thead><tr><th>Dimension</th><th>Group</th><th>Before</th><th>After</th><th>Delta</th></tr></thead><tbody>
+    {% for delta in distributions %}<tr><td>{{ delta.dimension }}</td><td>{{ delta.key }}</td><td>{{ delta.before_count }}</td><td>{{ delta.after_count }}</td><td>{% if delta.percentage_delta is none %}new{% else %}{{ '%.1f'|format(delta.percentage_delta) }}%{% endif %}</td></tr>{% else %}<tr><td colspan="5">No distribution changes.</td></tr>{% endfor %}
+  </tbody></table></section>
+  <section id="representative-samples"><h2>Representative samples</h2><div class="representatives">
+    {% for pair in representative_pairs %}<article class="sample"><strong>Before</strong>{% if thumbnails.get(pair.before_key) %}<img src="{{ thumbnails[pair.before_key] }}" alt="Before sample">{% endif %}<div class="code">{{ pair.before.relative_path }}</div><strong>After</strong>{% if thumbnails.get(pair.after_key) %}<img src="{{ thumbnails[pair.after_key] }}" alt="After sample">{% endif %}<div class="code">{{ pair.after.relative_path }}</div><div class="muted">{{ pair.method }} · {{ pair.confidence }}</div></article>{% endfor %}
+    {% for sample in representatives %}<article class="sample">{% if thumbnails.get(sample.relative_path) %}<img src="{{ thumbnails[sample.relative_path] }}" alt="Representative sample">{% endif %}<div class="code">{{ sample.relative_path }}</div><div class="muted">{{ sample.split }} / {{ sample.label }} · {{ sample.width }}×{{ sample.height }} · {{ sample.media_format }}</div></article>{% else %}<p>No representative samples.</p>{% endfor %}
+  </div></section>
+  <section id="change-feed"><h2>Change feed</h2><div class="filters"><button data-filter="all">All</button><button data-filter="error">Errors</button><button data-filter="warning">Warnings</button><button data-filter="info">Info</button></div>
+    {% for finding in findings %}<article class="finding {{ finding.severity }}" data-severity="{{ finding.severity }}"><div class="code">{{ finding.code }}</div><div>{{ finding.message }}</div><div class="samples">{{ finding.sample_ids|join(' · ') }}</div></article>{% else %}<p>No changes.</p>{% endfor %}
+  </section>
+</main>
+<script>document.querySelectorAll('[data-filter]').forEach(function(button){button.addEventListener('click',function(){var wanted=button.dataset.filter;document.querySelectorAll('#change-feed [data-severity]').forEach(function(row){row.hidden=wanted!=='all'&&row.dataset.severity!==wanted;});});});</script>
+</body>
+</html>

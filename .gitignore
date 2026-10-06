@@ -1,0 +1,14 @@
+*.py[cod]
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+/rust/target/
+/.datajig/
+/.benchmarks/
+/.superpowers/
+/docs/
+/uv.lock

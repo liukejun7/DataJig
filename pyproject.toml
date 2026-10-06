@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "datajig"
+version = "0.5.0"
+description = "Agent-native local dataset workspace with immutable revisions and semantic validation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Kejun Liu", email = "liukj7@gmail.com" },
+]
+keywords = ["datasets", "data-quality", "version-control"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Version Control",
+]
+dependencies = [
+  "blake3>=1.0,<2",
+  "ImageHash>=4.3,<5",
+  "Jinja2>=3.1,<4",
+  "numpy>=2.0,<3",
+  "Pillow>=11,<13",
+  "scipy>=1.14,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "mypy>=1.14,<2",
+  "numpy>=2.0,<2.5",
+  "ruff>=0.9,<1",
+]
+
+[project.urls]
+Repository = "https://github.com/liukejun7/DataJig"
+Issues = "https://github.com/liukejun7/DataJig/issues"
+Documentation = "https://github.com/liukejun7/DataJig#readme"
+
+[project.scripts]
+datajig = "datajig.cli:main"
+
+[tool.hatch.build.targets.wheel]
+core-metadata-version = "2.4"
+packages = ["src/datajig"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["datajig"]
+mypy_path = "src"

@@ -1,0 +1,148 @@
+name: Platform wheels
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            image: quay.io/pypa/manylinux2014_x86_64@sha256:ffd6d1f11237599748657996b750db6b3a5b724fea5a81cd9ea65add4f45b6c9
+            target: x86_64-unknown-linux-gnu
+            platform: manylinux_2_17_x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux2014_aarch64@sha256:9026a55e05e76ad74d9a4e6be814a5abda26cde08b1baa659ea4f7ee16b246e3
+            target: aarch64-unknown-linux-gnu
+            platform: manylinux_2_17_aarch64
+    env:
+      DATAJIG_BUILD_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: 1.85.0
+          target: ${{ matrix.target }}
+          cache: false
+      - name: Build and test in manylinux2014
+        env:
+          MANYLINUX_IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            --volume "$HOME/.cargo:$HOME/.cargo" \
+            --volume "$HOME/.rustup:$HOME/.rustup:ro" \
+            --workdir "$GITHUB_WORKSPACE" \
+            --env DATAJIG_BUILD_TARGET \
+            --env CARGO_HOME="$HOME/.cargo" \
+            --env RUSTUP_HOME="$HOME/.rustup" \
+            "$MANYLINUX_IMAGE" \
+            bash -euxo pipefail -c '
+              export PATH="$CARGO_HOME/bin:/opt/python/cp311-cp311/bin:$PATH"
+              python -m pip install "build>=1.2,<2" "auditwheel>=6,<7" "twine>=6,<7"
+              python -m build --wheel --outdir dist/native
+              auditwheel repair dist/native/*.whl --wheel-dir dist/wheel --plat "${{ matrix.platform }}"
+              auditwheel show dist/wheel/*.whl
+              python -m twine check dist/wheel/*.whl
+              python -m venv /tmp/datajig-wheel-smoke
+              /tmp/datajig-wheel-smoke/bin/python -m pip install --no-deps dist/wheel/*.whl
+              /tmp/datajig-wheel-smoke/bin/python - <<"PY"
+          import json
+          import os
+          import subprocess
+          from importlib.metadata import version
+
+          environment = os.environ.copy()
+          environment.pop("DATAJIG_NATIVE", None)
+          completed = subprocess.run(
+              ["/tmp/datajig-wheel-smoke/bin/datajig", "capabilities"],
+              check=True,
+              capture_output=True,
+              text=True,
+              env=environment,
+          )
+          document = json.loads(completed.stdout)
+          assert document["backend"] == "rust"
+          assert document["tool"]["name"] == "datajig"
+          assert document["tool"]["version"].replace("-dev.", ".dev") == version("datajig")
+          PY
+            '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: datajig-linux-${{ matrix.arch }}
+          path: dist/wheel/*.whl
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            deployment_target: "10.12"
+          - arch: arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            deployment_target: "11.0"
+    env:
+      DATAJIG_BUILD_TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: 1.85.0
+          target: ${{ matrix.target }}
+      - name: Build native wheel
+        run: |
+          python -m pip install "build>=1.2,<2" "delocate>=0.12,<1" "twine>=6,<7"
+          python -m build --wheel --outdir dist/native
+          delocate-wheel --require-archs "${{ matrix.arch }}" --wheel-dir dist/wheel dist/native/*.whl
+          delocate-listdeps dist/wheel/*.whl
+          python -m twine check dist/wheel/*.whl
+      - name: Smoke test installed artifact
+        run: |
+          python -m venv /tmp/datajig-wheel-smoke
+          /tmp/datajig-wheel-smoke/bin/python -m pip install --no-deps dist/wheel/*.whl
+          /tmp/datajig-wheel-smoke/bin/python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from importlib.metadata import version
+
+          environment = os.environ.copy()
+          environment.pop("DATAJIG_NATIVE", None)
+          completed = subprocess.run(
+              ["/tmp/datajig-wheel-smoke/bin/datajig", "capabilities"],
+              check=True,
+              capture_output=True,
+              text=True,
+              env=environment,
+          )
+          document = json.loads(completed.stdout)
+          assert document["backend"] == "rust"
+          assert document["tool"]["name"] == "datajig"
+          assert document["tool"]["version"].replace("-dev.", ".dev") == version("datajig")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: datajig-macos-${{ matrix.arch }}
+          path: dist/wheel/*.whl
+          if-no-files-found: error

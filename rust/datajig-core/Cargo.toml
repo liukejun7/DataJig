@@ -1,0 +1,39 @@
+[package]
+name = "datajig-core"
+version = "0.5.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+blake3 = "1.8"
+cap-std = "3.4.5"
+cap-primitives = "3.4.6"
+chrono = { version = "0.4", default-features = false }
+clap = { version = "4.5", features = ["derive"] }
+csv = "1.3"
+fs2 = "0.4.3"
+globset = "=0.4.16"
+image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png", "webp"] }
+num-bigint = "0.4"
+parquet = { version = "=59.0.0", default-features = false, features = ["brotli", "crc", "flate2-zlib-rs", "json", "lz4", "snap", "zstd"] }
+rayon = "1.11"
+regex = "1.11"
+rustdct = "0.7"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+ureq = { version = "=3.1.2", default-features = false, features = ["gzip", "json", "native-tls"] }
+url = "=2.5.4"
+walkdir = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.5", features = ["fs", "process"] }
+
+[lib]
+name = "datajig_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "datajig-core"
+path = "src/main.rs"
