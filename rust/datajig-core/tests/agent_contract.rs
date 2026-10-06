@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_51698280ba2e0015b8c9a74ac80eceaaed2e239ebaecbc56f2571b0ed1d8f0d8", identities[0],
+        "contract_9f5c80c83a7df21b405e684d8454c91f89d09fdfd12120737a68828aade4f5e1", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }
@@ -179,6 +179,44 @@ fn discovery_connects_import_receipts_to_multi_shard_preparation() {
     assert!(description.contains("JSONL"));
     assert!(usage.contains("datajig.hf-import.json"));
     assert!(render_agent_skill().contains("datajig.hf-import.json"));
+}
+
+#[test]
+fn discovery_publishes_the_bounded_transform_contract() {
+    let capabilities = run_json(&["capabilities"]);
+    let plan = run_json(&["describe", "transform-plan"]);
+    let apply = run_json(&["describe", "transform-apply"]);
+    let info = run_json(&["describe", "transform-info"]);
+
+    assert_eq!(true, capabilities["features"]["agent_native_transforms"]);
+    assert_eq!(json!([1]), capabilities["transform_plan_schema_versions"]);
+    assert_eq!(
+        json!([1]),
+        capabilities["transform_receipt_schema_versions"]
+    );
+    assert_eq!(
+        json!([1]),
+        capabilities["transform_provider_protocol_versions"]
+    );
+    assert_eq!(
+        json!(["csv", "parquet", "jsonl"]),
+        capabilities["transform_source_formats"]
+    );
+    assert_eq!(json!(16), capabilities["transform_limits"]["inputs"]);
+    assert_eq!(json!("duckdb"), capabilities["transform_provider"]["name"]);
+    assert_eq!(
+        json!("pip install 'datajig[duckdb]'"),
+        capabilities["transform_provider"]["install"]
+    );
+    assert_eq!(json!("transform-plan"), plan["command"]["name"]);
+    assert_eq!(json!(false), plan["command"]["read_only"]);
+    assert_eq!(json!("transform-apply"), apply["command"]["name"]);
+    assert_eq!(json!(false), apply["command"]["read_only"]);
+    assert_eq!(json!("transform-info"), info["command"]["name"]);
+    assert_eq!(json!(true), info["command"]["read_only"]);
+    let skill = render_agent_skill();
+    assert!(skill.contains("transform-plan"));
+    assert!(skill.contains("transform-receipt"));
 }
 
 #[test]

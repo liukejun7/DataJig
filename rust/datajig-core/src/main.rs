@@ -856,6 +856,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 "snapshot_operations_available": cfg!(unix),
                 "snapshot_manifests": true,
                 "repository_managed_agent_ci": cfg!(unix),
+                "agent_native_transforms": cfg!(unix),
             });
             let mut capabilities = json!({
                 "agent_api_version": AGENT_API_VERSION,
@@ -901,6 +902,49 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             let object = capabilities
                 .as_object_mut()
                 .expect("capabilities document should be an object");
+            object.insert(
+                "transform_plan_schema_versions".into(),
+                json!([datajig_core::TRANSFORM_PLAN_SCHEMA_VERSION]),
+            );
+            object.insert(
+                "transform_receipt_schema_versions".into(),
+                json!([datajig_core::TRANSFORM_RECEIPT_SCHEMA_VERSION]),
+            );
+            object.insert(
+                "transform_provider_protocol_versions".into(),
+                json!([datajig_core::TRANSFORM_PROVIDER_PROTOCOL_VERSION]),
+            );
+            object.insert(
+                "transform_source_formats".into(),
+                json!(["csv", "parquet", "jsonl"]),
+            );
+            object.insert(
+                "transform_output_scalar_types".into(),
+                json!([
+                    "null",
+                    "boolean",
+                    "integer",
+                    "unsigned_integer",
+                    "double",
+                    "string"
+                ]),
+            );
+            object.insert(
+                "transform_provider".into(),
+                json!({
+                    "name": "duckdb", "distribution": "optional",
+                    "install": "pip install 'datajig[duckdb]'", "status": "probe_required",
+                    "duckdb_version": "1.5.6"
+                }),
+            );
+            object.insert(
+                "transform_limits".into(),
+                json!(datajig_core::TransformLimits::v1()),
+            );
+            object.insert(
+                "transform_ordering".into(),
+                json!({"multi_row": "top_level_order_by_must_end_with_id_field"}),
+            );
             object.insert(
                 "training_consumption_plan_schema_versions".into(),
                 json!([datajig_core::TRAINING_CONSUMPTION_PLAN_SCHEMA_VERSION]),

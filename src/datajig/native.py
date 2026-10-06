@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -14,6 +15,9 @@ NATIVE_TRAINING_COMMANDS = frozenset({"export", "export-info", "view-check"})
 NATIVE_CONSUMPTION_COMMANDS = frozenset({"consume-info", "consume-plan"})
 NATIVE_HF_IMPORT_COMMANDS = frozenset({"hf-import-apply", "hf-import-plan"})
 NATIVE_PREPARE_COMMANDS = frozenset({"prepare-apply", "prepare-plan"})
+NATIVE_TRANSFORM_COMMANDS = frozenset(
+    {"transform-apply", "transform-info", "transform-plan"}
+)
 NATIVE_REPOSITORY_COMMANDS = frozenset({"repository-check", "repository-install"})
 NATIVE_REPORT_COMMANDS = frozenset({"explain", "finding", "findings", "review"})
 NATIVE_WORKSPACE_COMMANDS = frozenset(
@@ -50,6 +54,7 @@ NATIVE_COMMANDS = (
     | NATIVE_CONSUMPTION_COMMANDS
     | NATIVE_HF_IMPORT_COMMANDS
     | NATIVE_PREPARE_COMMANDS
+    | NATIVE_TRANSFORM_COMMANDS
     | NATIVE_REPOSITORY_COMMANDS
     | NATIVE_WORKSPACE_COMMANDS
 )
@@ -59,15 +64,34 @@ class NativeBackendUnavailableError(RuntimeError):
     """Raised when the authoritative native backend cannot be executed."""
 
 
+class TransformProviderUnavailableError(RuntimeError):
+    """Raised when an execution command cannot load the pinned optional provider."""
+
+    remediation = "pip install 'datajig[duckdb]'"
+
+    def __init__(self, message: str, *, code: str = "PROVIDER_UNAVAILABLE") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def run_native(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     binary = _resolve_native_binary()
+    command = args[0] if args else ""
+    native_environment = os.environ.copy()
+    native_environment.pop("_DATAJIG_PROVIDER_PYTHON", None)
+    if command in NATIVE_TRANSFORM_COMMANDS:
+        native_environment["_DATAJIG_PROVIDER_PYTHON"] = os.path.abspath(sys.executable)
+    requests_help = any(item in {"-h", "--help"} for item in args[1:])
+    if command in {"transform-plan", "transform-apply"} and not requests_help:
+        _verify_transform_provider()
     try:
-        _verify_native(binary, args)
+        _verify_native(binary, args, native_environment)
         return subprocess.run(
             [str(binary), *args],
             check=False,
             capture_output=True,
             encoding="utf-8",
+            env=native_environment,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise NativeBackendUnavailableError(
@@ -109,13 +133,34 @@ def _is_executable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK)
 
 
-def _verify_native(binary: Path, args: Sequence[str]) -> None:
+def _verify_transform_provider() -> None:
+    try:
+        from datajig.providers.duckdb import ProviderError, _probe
+
+        _probe()
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise TransformProviderUnavailableError(
+            "DuckDB transform support is not installed. Install it with: "
+            "pip install 'datajig[duckdb]'"
+        ) from exc
+    except ProviderError as exc:
+        raise TransformProviderUnavailableError(
+            f"{exc.message} {exc.remediation}", code=exc.code
+        ) from exc
+
+
+def _verify_native(
+    binary: Path, args: Sequence[str], native_environment: dict[str, str]
+) -> None:
     command = args[0] if args else ""
+    verification_environment = native_environment.copy()
+    verification_environment.pop("_DATAJIG_PROVIDER_PYTHON", None)
     completed = subprocess.run(
         [str(binary), "capabilities"],
         check=False,
         capture_output=True,
         timeout=5,
+        env=verification_environment,
     )
     try:
         capabilities = json.loads(completed.stdout.decode("utf-8"))
@@ -242,6 +287,26 @@ def _verify_native(binary: Path, args: Sequence[str]) -> None:
     )
     hf_import_receipt_schema_versions = (
         capabilities.get("hf_import_receipt_schema_versions")
+        if isinstance(capabilities, dict)
+        else None
+    )
+    transform_plan_schema_versions = (
+        capabilities.get("transform_plan_schema_versions")
+        if isinstance(capabilities, dict)
+        else None
+    )
+    transform_receipt_schema_versions = (
+        capabilities.get("transform_receipt_schema_versions")
+        if isinstance(capabilities, dict)
+        else None
+    )
+    transform_provider_protocol_versions = (
+        capabilities.get("transform_provider_protocol_versions")
+        if isinstance(capabilities, dict)
+        else None
+    )
+    transform_source_formats = (
+        capabilities.get("transform_source_formats")
         if isinstance(capabilities, dict)
         else None
     )
@@ -461,6 +526,20 @@ def _verify_native(binary: Path, args: Sequence[str]) -> None:
             )
         )
         or (
+            command in NATIVE_TRANSFORM_COMMANDS | {"capabilities"}
+            and (
+                not isinstance(transform_plan_schema_versions, list)
+                or 1 not in transform_plan_schema_versions
+                or not isinstance(transform_receipt_schema_versions, list)
+                or 1 not in transform_receipt_schema_versions
+                or not isinstance(transform_provider_protocol_versions, list)
+                or 1 not in transform_provider_protocol_versions
+                or transform_source_formats != ["csv", "parquet", "jsonl"]
+                or not isinstance(features, dict)
+                or features.get("agent_native_transforms") is not True
+            )
+        )
+        or (
             command in NATIVE_TRAINING_COMMANDS | {"capabilities"}
             and (
                 not isinstance(training_bundle_schema_versions, list)
@@ -526,6 +605,10 @@ def _verify_native(binary: Path, args: Sequence[str]) -> None:
                 )
                 or not any(
                     type(item) is int and item == 2
+                    for item in revision_schema_versions
+                )
+                or not any(
+                    type(item) is int and item == 3
                     for item in revision_schema_versions
                 )
             )

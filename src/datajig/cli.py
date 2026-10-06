@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Never
 from datajig.native import (
     NATIVE_COMMANDS,
     NativeBackendUnavailableError,
+    TransformProviderUnavailableError,
     run_native,
 )
 
@@ -440,6 +441,9 @@ def _run_compare(args: argparse.Namespace) -> int:
 def _run_native_command(raw_args: Sequence[str]) -> int:
     try:
         completed = run_native(raw_args)
+    except TransformProviderUnavailableError as exc:
+        _print_agent_error(exc.code, str(exc))
+        return 2
     except NativeBackendUnavailableError as exc:
         _print_agent_error("NATIVE_BACKEND_UNAVAILABLE", str(exc))
         return 2

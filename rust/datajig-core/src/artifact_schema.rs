@@ -1,10 +1,15 @@
 use crate::repository_integration::repository_integration_schema_example;
+use crate::transform::{
+    TransformExecutionEvidence, TransformExpectedOutput, TransformField, TransformLimits,
+    TransformPlan, TransformPlanInput, TransformProviderIdentity, TransformReceipt,
+    TransformSource, TransformSourceFormat,
+};
 use serde_json::{Value, json};
 
 pub const ARTIFACT_SCHEMA_VERSION: u8 = 1;
 type ArtifactSchemaFactory = fn() -> Value;
 
-const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 6] = [
+const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 8] = [
     ("jsonl-field-patch", jsonl_field_patch_artifact),
     ("prepare-recipe", prepare_recipe_artifact),
     ("repository-integration", repository_integration_artifact),
@@ -17,7 +22,269 @@ const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 6] = [
         "training-consumption-receipt",
         training_consumption_receipt_artifact,
     ),
+    ("transform-plan", transform_plan_artifact),
+    ("transform-receipt", transform_receipt_artifact),
 ];
+
+fn transform_plan_artifact() -> Value {
+    let (plan, _) = transform_examples();
+    json!({
+        "name": "transform-plan",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "media_type": "application/json",
+        "schema": transform_plan_schema(),
+        "example": serde_json::to_value(plan).expect("transform plan should serialize")
+    })
+}
+
+fn transform_receipt_artifact() -> Value {
+    let (_, receipt) = transform_examples();
+    json!({
+        "name": "transform-receipt",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "media_type": "application/json",
+        "schema": transform_receipt_schema(),
+        "example": serde_json::to_value(receipt).expect("transform receipt should serialize")
+    })
+}
+
+fn transform_examples() -> (TransformPlan, TransformReceipt) {
+    let field = TransformField::new("id".into(), "string".into(), false)
+        .expect("example field should be valid");
+    let provider = TransformProviderIdentity::create(
+        env!("CARGO_PKG_VERSION").into(),
+        "1.5.6".into(),
+        "CPython".into(),
+        "3.12.0".into(),
+    )
+    .expect("example provider should be valid");
+    let expected = TransformExpectedOutput {
+        schema: vec![field.clone()],
+        rows: 1,
+        bytes: 11,
+        unique_ids: 1,
+        output_content_id: format!("prepared_{}", "0".repeat(64)),
+    };
+    let plan = TransformPlan::create(TransformPlanInput {
+        sources: vec![
+            TransformSource::create(
+                "source".into(),
+                "/workspace/source.csv".into(),
+                TransformSourceFormat::Csv,
+                10,
+                1,
+                format!("source_{}", "1".repeat(64)),
+            )
+            .expect("example source should be valid"),
+        ],
+        sql_path: "/workspace/transform.sql".into(),
+        sql: "SELECT id FROM source ORDER BY id".into(),
+        parameters: vec![],
+        id_field: "id".into(),
+        output_path: "/workspace/prepared.jsonl".into(),
+        provider,
+        limits: TransformLimits::v1(),
+        expected: expected.clone(),
+    })
+    .expect("example plan should be valid");
+    let receipt = TransformReceipt::create(
+        &plan,
+        TransformExecutionEvidence {
+            output_path: "/workspace/prepared.jsonl".into(),
+            output_content_id: expected.output_content_id,
+            schema: expected.schema,
+            rows: expected.rows,
+            bytes: expected.bytes,
+            unique_ids: expected.unique_ids,
+        },
+    )
+    .expect("example receipt should be valid");
+    (plan, receipt)
+}
+
+fn transform_plan_schema() -> Value {
+    let mut properties = transform_common_properties();
+    let object = properties.as_object_mut().expect("properties object");
+    object.insert("kind".into(), json!({"const":"transform_plan"}));
+    object.extend([
+        ("plan_id".into(), json!({"type":"string","pattern":"^xform_[0-9a-f]{64}$"})),
+        ("sources".into(), json!({"type":"array","minItems":1,"maxItems":16,"items":transform_source_schema()})),
+        ("sql_path".into(), nonempty_string()),
+        ("sql".into(), json!({"type":"string","minLength":1,"maxLength":65536})),
+        ("parameters".into(), json!({"type":"array","maxItems":256,"items":{"type":["null","boolean","number","string"]}})),
+        ("limits".into(), transform_limits_schema()),
+        ("expected".into(), transform_output_schema()),
+    ]);
+    strict_object(
+        &[
+            "namespace",
+            "kind",
+            "schema_version",
+            "plan_id",
+            "sources",
+            "sql_path",
+            "sql",
+            "sql_content_id",
+            "parameters",
+            "parameter_content_id",
+            "id_field",
+            "output_path",
+            "provider",
+            "provider_id",
+            "limits",
+            "expected",
+        ],
+        properties,
+    )
+}
+
+fn transform_receipt_schema() -> Value {
+    let mut properties = transform_common_properties();
+    let object = properties.as_object_mut().expect("properties object");
+    object.insert("kind".into(), json!({"const":"transform_receipt"}));
+    object.remove("sql_content_id");
+    object.remove("parameter_content_id");
+    object.extend([
+        ("receipt_id".into(), json!({"type":"string","pattern":"^xformed_[0-9a-f]{64}$"})),
+        ("plan_id".into(), json!({"type":"string","pattern":"^xform_[0-9a-f]{64}$"})),
+        ("source_aliases".into(), json!({"type":"array","minItems":1,"maxItems":16,"items":{"type":"string"}})),
+        ("source_content_ids".into(), json!({"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","minLength":1}})),
+        ("sql_content_id".into(), content_id_schema("sql")),
+        ("parameter_content_id".into(), content_id_schema("params")),
+        ("output_content_id".into(), content_id_schema("prepared")),
+        ("schema".into(), transform_fields_schema()),
+        ("rows".into(), json!({"type":"integer","minimum":0,"maximum":2000000})),
+        ("bytes".into(), json!({"type":"integer","minimum":0,"maximum":536870912})),
+        ("unique_ids".into(), json!({"type":"integer","minimum":0,"maximum":2000000})),
+    ]);
+    strict_object(
+        &[
+            "namespace",
+            "kind",
+            "schema_version",
+            "receipt_id",
+            "plan_id",
+            "source_aliases",
+            "source_content_ids",
+            "sql_content_id",
+            "parameter_content_id",
+            "provider",
+            "provider_id",
+            "id_field",
+            "output_path",
+            "output_content_id",
+            "schema",
+            "rows",
+            "bytes",
+            "unique_ids",
+        ],
+        properties,
+    )
+}
+
+fn transform_common_properties() -> Value {
+    json!({
+        "namespace": {"const":"datajig"},
+        "kind": {"type":"string"},
+        "schema_version": {"const":1},
+        "sql_content_id": content_id_schema("sql"),
+        "parameter_content_id": content_id_schema("params"),
+        "id_field": nonempty_string(),
+        "output_path": nonempty_string(),
+        "provider": transform_provider_schema(),
+        "provider_id": content_id_schema("provider")
+    })
+}
+
+fn transform_source_schema() -> Value {
+    strict_object(
+        &["alias", "path", "format", "bytes", "rows", "content_id"],
+        json!({
+            "alias":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"}, "path":nonempty_string(),
+            "format":{"enum":["csv","parquet","jsonl"]}, "bytes":{"type":"integer","minimum":1},
+            "rows":{"type":"integer","minimum":0}, "content_id":nonempty_string()
+        }),
+    )
+}
+
+fn transform_provider_schema() -> Value {
+    strict_object(
+        &[
+            "protocol",
+            "protocol_version",
+            "implementation",
+            "implementation_version",
+            "duckdb_version",
+            "python_implementation",
+            "python_version",
+            "serializer_version",
+            "source_loader_policy_version",
+            "sql_policy_version",
+            "provider_id",
+        ],
+        json!({
+            "protocol":{"const":"datajig.transform-provider.v1"}, "protocol_version":{"const":1},
+            "implementation":{"const":"datajig-duckdb-python"}, "implementation_version":nonempty_string(),
+            "duckdb_version":nonempty_string(), "python_implementation":nonempty_string(), "python_version":nonempty_string(),
+            "serializer_version":{"const":1}, "source_loader_policy_version":{"const":1}, "sql_policy_version":{"const":1},
+            "provider_id":content_id_schema("provider")
+        }),
+    )
+}
+
+fn transform_limits_schema() -> Value {
+    let names = [
+        "inputs",
+        "source_bytes",
+        "source_rows",
+        "sql_bytes",
+        "parameters",
+        "parameter_bytes",
+        "output_rows",
+        "output_bytes",
+        "output_fields",
+        "fetch_batch_rows",
+        "duckdb_memory_bytes",
+        "provider_stdout_bytes",
+        "provider_stderr_bytes",
+        "wall_time_seconds",
+    ];
+    let properties = Value::Object(
+        names
+            .iter()
+            .map(|name| ((*name).into(), json!({"type":"integer","minimum":0})))
+            .collect(),
+    );
+    strict_object(&names, properties)
+}
+
+fn transform_output_schema() -> Value {
+    strict_object(
+        &["schema", "rows", "bytes", "unique_ids", "output_content_id"],
+        json!({
+            "schema":transform_fields_schema(), "rows":{"type":"integer","minimum":0}, "bytes":{"type":"integer","minimum":0},
+            "unique_ids":{"type":"integer","minimum":0}, "output_content_id":content_id_schema("prepared")
+        }),
+    )
+}
+
+fn transform_fields_schema() -> Value {
+    json!({"type":"array","minItems":1,"maxItems":256,"items":strict_object(&["name","value_type","nullable"], json!({
+        "name":nonempty_string(), "value_type":{"enum":["null","boolean","integer","unsigned_integer","double","string"]}, "nullable":{"type":"boolean"}
+    }))})
+}
+
+fn strict_object(required: &[&str], properties: Value) -> Value {
+    json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":required,"properties":properties})
+}
+
+fn nonempty_string() -> Value {
+    json!({"type":"string","minLength":1})
+}
+
+fn content_id_schema(prefix: &str) -> Value {
+    json!({"type":"string","pattern":format!("^{prefix}_[0-9a-f]{{64}}$")})
+}
 
 fn repository_integration_artifact() -> Value {
     let lock = repository_integration_schema_example();

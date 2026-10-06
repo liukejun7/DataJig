@@ -1,6 +1,6 @@
 use datajig_core::{
     ARTIFACT_SCHEMA_VERSION, JsonlPatchRequest, JsonlSubsetRecipe, RepositoryIntegrationLock,
-    artifact_schema, artifact_schema_names,
+    TransformPlan, TransformReceipt, artifact_schema, artifact_schema_names,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -22,6 +22,31 @@ fn artifact_schema_catalog_is_sorted_unique_and_complete() {
         assert_eq!(false, document["schema"]["additionalProperties"]);
     }
     assert!(artifact_schema("not-an-artifact").is_none());
+}
+
+#[test]
+fn published_transform_examples_are_accepted_by_strict_runtime_parsers() {
+    let root = unique_temporary_path("transform-artifacts");
+    fs::create_dir(&root).expect("fixture directory should be created");
+    let plan_path = root.join("plan.json");
+    let receipt_path = root.join("receipt.json");
+    let plan = artifact_schema("transform-plan").expect("plan schema should resolve");
+    let receipt = artifact_schema("transform-receipt").expect("receipt schema should resolve");
+    fs::write(&plan_path, serde_json::to_vec(&plan["example"]).unwrap()).unwrap();
+    fs::write(
+        &receipt_path,
+        serde_json::to_vec(&receipt["example"]).unwrap(),
+    )
+    .unwrap();
+
+    let parsed_plan = TransformPlan::from_path(&plan_path);
+    let parsed_receipt = TransformReceipt::from_path(&receipt_path);
+    let _ = fs::remove_dir_all(&root);
+
+    parsed_plan.expect("published transform plan should remain executable");
+    parsed_receipt.expect("published transform receipt should remain executable");
+    assert_eq!(false, plan["schema"]["additionalProperties"]);
+    assert_eq!(false, receipt["schema"]["additionalProperties"]);
 }
 
 #[test]

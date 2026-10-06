@@ -102,7 +102,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         command(
             "artifact-schema",
             "Return a machine-readable JSON Schema and canonical example for a DataJig input artifact.",
-            "datajig artifact-schema [jsonl-field-patch|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt]",
+            "datajig artifact-schema [jsonl-field-patch|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]",
             read_only(vec![], all_platforms()),
             vec![input(
                 "artifact",
@@ -759,9 +759,12 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         ),
         command(
             "init",
-            "Track a local dataset and record its initial last-good baseline.",
-            "datajig init <DATASET> [--id-field <FIELD>] [--policy <PATH>] [--state <DIR>] [--threads <1..8>]",
-            writes(vec!["read_dataset", "write_workspace"], unix_platforms()),
+            "Track a local dataset, optionally verify its transform receipt, and record the initial last-good baseline.",
+            "datajig init <DATASET> [--id-field <FIELD>] [--source-receipt <TRANSFORM_RECEIPT.json>] [--policy <PATH>] [--state <DIR>] [--threads <1..8>]",
+            writes(
+                vec!["read_dataset", "read_transform_receipt", "write_workspace"],
+                unix_platforms(),
+            ),
             vec![
                 input(
                     "dataset",
@@ -778,6 +781,14 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
                     false,
                     None,
                     "Required stable record key when DATASET is a JSONL file.",
+                ),
+                input(
+                    "source_receipt",
+                    "path",
+                    false,
+                    false,
+                    None,
+                    "Optional verified transform receipt; binds plan, provider, query, inputs, and output identity into revision provenance.",
                 ),
                 input(
                     "policy",
@@ -1807,6 +1818,148 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
             standard_read_exits(),
         ),
         command(
+            "transform-apply",
+            "Re-execute one authorized bounded SQL transform and atomically publish canonical JSONL plus provenance receipt.",
+            "datajig transform-apply <PLAN.json> --accept-plan <xform_ID>",
+            writes(
+                vec![
+                    "read_transform_plan",
+                    "read_dataset",
+                    "execute_bounded_sql",
+                    "write_dataset",
+                    "write_transform_receipt",
+                ],
+                unix_platforms(),
+            ),
+            vec![
+                input(
+                    "plan",
+                    "path",
+                    true,
+                    false,
+                    None,
+                    "Immutable schema-1 transform plan.",
+                ),
+                input(
+                    "accept_plan",
+                    "content_id:xform",
+                    true,
+                    false,
+                    None,
+                    "Exact plan identity authorizing execution and publication.",
+                ),
+            ],
+            output("transform_applied", "stdout", true),
+            vec![
+                exit(0, "canonical JSONL and transform receipt published"),
+                exit(
+                    2,
+                    "authorization, provider, drift, data, or destination failure",
+                ),
+            ],
+        ),
+        command(
+            "transform-info",
+            "Inspect and optionally verify a transform plan or receipt without executing SQL.",
+            "datajig transform-info <PLAN_OR_RECEIPT.json> [--verify]",
+            read_only(
+                vec!["read_transform_artifact", "read_published_output"],
+                unix_platforms(),
+            ),
+            vec![
+                input(
+                    "artifact",
+                    "path",
+                    true,
+                    false,
+                    None,
+                    "Schema-1 transform plan or receipt.",
+                ),
+                input(
+                    "verify",
+                    "boolean",
+                    false,
+                    false,
+                    Some("false"),
+                    "Verify identity and, for receipts, the published canonical output.",
+                ),
+            ],
+            output("transform_info", "stdout", true),
+            standard_read_exits(),
+        ),
+        command(
+            "transform-plan",
+            "Preview a bounded DuckDB SELECT over explicit CSV, Parquet, or JSONL aliases and bind the exact output before authorization.",
+            "datajig transform-plan --input <ALIAS=PATH>... --sql <QUERY.sql> [--params <PARAMS.json>] --id-field <FIELD> --output <DATASET.jsonl> --plan <PLAN.json>",
+            writes(
+                vec![
+                    "read_dataset",
+                    "read_sql",
+                    "execute_bounded_preview",
+                    "write_transform_plan",
+                ],
+                unix_platforms(),
+            ),
+            vec![
+                input(
+                    "input",
+                    "alias_path",
+                    true,
+                    true,
+                    None,
+                    "Explicit input alias and CSV, Parquet, or JSONL path; maximum 16.",
+                ),
+                input(
+                    "sql",
+                    "path",
+                    true,
+                    false,
+                    None,
+                    "One AST-whitelisted SELECT query, maximum 64 KiB.",
+                ),
+                input(
+                    "params",
+                    "path",
+                    false,
+                    false,
+                    None,
+                    "Optional JSON array of at most 256 scalar positional parameters.",
+                ),
+                input(
+                    "id_field",
+                    "string",
+                    true,
+                    false,
+                    None,
+                    "Unique, non-null output record identity; final ORDER BY key for multi-row output.",
+                ),
+                input(
+                    "output",
+                    "path",
+                    true,
+                    false,
+                    None,
+                    "Future new canonical JSONL destination bound into the plan.",
+                ),
+                input(
+                    "plan",
+                    "path",
+                    true,
+                    false,
+                    None,
+                    "New immutable transform plan artifact.",
+                ),
+            ],
+            output("transform_planned", "stdout", true),
+            vec![
+                exit(0, "plan and predicted canonical output identity created"),
+                exit(
+                    2,
+                    "SQL policy, provider, source, output, or resource limit failure",
+                ),
+            ],
+        ),
+        command(
             "tutorial",
             "Create and run a complete verified keyed-JSONL-to-training example.",
             "datajig tutorial <OUTPUT>",
@@ -1898,10 +2051,11 @@ pub fn render_agent_skill() -> String {
         "## Operating rules\n\n\
 - Run `datajig capabilities` before relying on an optional feature.\n\
 - Run `datajig describe [command]` for the versioned input, output, effect, platform, and exit-code contract.\n\
-- Run `datajig artifact-schema [jsonl-field-patch|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt]` instead of guessing an input artifact shape.\n\
+- Run `datajig artifact-schema [jsonl-field-patch|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]` instead of guessing an input artifact shape.\n\
 - Use `repository-install` to publish one version-matched Skill, CI workflow, hook, and content-addressed lock; use `repository-check` before agent work and in CI to reject drift or dirty bound workspaces.\n\
 - Start every local table with `datajig inspect`: JSONL returns workspace readiness; CSV and flat Parquet return a privacy-safe profile and inline preparation recipe template.\n\
 - For CSV, flat Parquet, or JSONL data preparation, pass either one file or a verified `datajig.hf-import.json`; use recipe `include`/`ignore` globs for imported shards, compose ordered transformations, inspect the bounded `prepare-plan`, then pass the exact returned `prep_...` identity to `prepare-apply`.\n\
+- For relational transforms, use explicit `ALIAS=PATH` inputs and one AST-whitelisted SELECT; inspect `transform-plan`, authorize its exact `xform_...` identity with `transform-apply`, then retain the `transform-receipt` for revision lineage. Install the optional provider with `pip install 'datajig[duckdb]'`.\n\
 - For Hugging Face dataset repositories, run `hf-import-plan`, inspect the resolved 40-character commit and selected paths, then pass the exact returned `hfplan_...` identity to `hf-import-apply`; never substitute a moving branch during apply.\n\
 - Always parse successful stdout as JSON; commands with `write_artifact` effects also write the requested file.\n\
 - Parse failures from stderr; exit code 2 means invalid input or I/O and exit code 4 means a requested entity was not found.\n\
