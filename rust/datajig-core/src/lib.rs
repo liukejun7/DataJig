@@ -132,7 +132,7 @@ pub use repository_integration::{
 pub use review::{MAX_PHASH_THRESHOLD, MAX_REVIEW_MATCH_CANDIDATES, ReviewArtifact, create_review};
 pub use revision::{
     DatasetRevision, MAX_REVISION_BYTES, RECORD_REVISION_SCHEMA_VERSION, REVISION_SCHEMA_VERSION,
-    RevisionProvenance,
+    RevisionProvenance, TRANSFORM_LINEAGE_REVISION_SCHEMA_VERSION, TransformLineage,
 };
 #[cfg(unix)]
 use std::ffi::OsString;
@@ -186,8 +186,9 @@ pub use transform_sql::{
 };
 pub use transform_workflow::{
     TransformApplyArtifact, TransformDriftError, TransformInfoArtifact,
-    TransformNotAuthorizedError, TransformPlanArtifact, TransformPlanRequest, apply_transform,
-    inspect_transform, plan_transform,
+    TransformNotAuthorizedError, TransformPlanArtifact, TransformPlanRequest,
+    VerifiedTransformReceipt, apply_transform, inspect_transform, plan_transform,
+    verify_transform_receipt,
 };
 pub use tutorial::{TutorialArtifact, run_tutorial};
 #[cfg(unix)]
@@ -201,11 +202,11 @@ pub use workspace::{
     begin_changeset, check_changeset, check_subset_view, check_workspace, draft_jsonl_patch,
     export_training_bundle, export_training_bundle_with_view,
     export_training_bundle_with_view_at_revision, initialize_jsonl_workspace,
-    initialize_jsonl_workspace_with_policy, initialize_workspace, is_patchable_quality_code,
-    locate_changeset_finding, materialize_revision, plan_changeset, plan_workspace,
-    preview_jsonl_patch, resolve_changeset_selectors, resolve_optional_changeset_context,
-    revision_log, seal_changeset, seal_workspace, stage_changeset, status_changeset,
-    status_workspace, undo_jsonl_patch,
+    initialize_jsonl_workspace_with_policy, initialize_jsonl_workspace_with_receipt,
+    initialize_workspace, is_patchable_quality_code, locate_changeset_finding,
+    materialize_revision, plan_changeset, plan_workspace, preview_jsonl_patch,
+    resolve_changeset_selectors, resolve_optional_changeset_context, revision_log, seal_changeset,
+    seal_workspace, stage_changeset, status_changeset, status_workspace, undo_jsonl_patch,
 };
 pub use workspace_store::{WorkspaceLock, WorkspaceRefs, WorkspaceStore};
 

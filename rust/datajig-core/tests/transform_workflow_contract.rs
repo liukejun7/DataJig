@@ -3,11 +3,12 @@ use datajig_core::{
     MAX_TRANSFORM_OUTPUT_ROWS, MAX_TRANSFORM_PARAMETER_BYTES, MAX_TRANSFORM_PARAMETERS,
     MAX_TRANSFORM_SOURCE_BYTES, MAX_TRANSFORM_SOURCE_ROWS, MAX_TRANSFORM_SQL_BYTES,
     TRANSFORM_PLAN_SCHEMA_VERSION, TRANSFORM_RECEIPT_SCHEMA_VERSION, TransformExecutionEvidence,
-    TransformExpectedOutput, TransformField, TransformInputSpec, TransformLimits,
+    TransformExpectedOutput, TransformField, TransformInputSpec, TransformLimits, TransformLineage,
     TransformOutputError, TransformOutputErrorKind, TransformPlan, TransformPlanInput,
     TransformPlanRequest, TransformProviderIdentity, TransformReceipt, TransformSource,
-    TransformSourceFormat, apply_transform, inspect_transform, plan_transform,
-    verify_transform_candidate,
+    TransformSourceFormat, WorkspaceStore, apply_transform,
+    initialize_jsonl_workspace_with_receipt, inspect_transform, plan_transform,
+    verify_transform_candidate, verify_transform_receipt,
 };
 use serde_json::json;
 use std::fs;
@@ -437,6 +438,67 @@ fn workflow_apply_rejects_drift_and_collisions_without_partial_public_state() {
         fs::read_to_string(&fixture.output).unwrap()
     );
     assert!(!fixture.receipt().exists());
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn lineage_verified_receipt_changes_revision_identity_and_initializes_workspace() {
+    let fixture = workflow_fixture("lineage");
+    let planned = plan_transform(fixture.request()).unwrap();
+    apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    let verified = verify_transform_receipt(&fixture.receipt(), &fixture.output, "id").unwrap();
+    let lineage = TransformLineage::from_verified_receipt(&verified).unwrap();
+    assert_eq!(planned.plan_id, lineage.plan_id());
+
+    let state = fixture.root.join("state");
+    let artifact = initialize_jsonl_workspace_with_receipt(
+        &fixture.output,
+        &state,
+        "id",
+        None,
+        Some(&fixture.receipt()),
+    )
+    .unwrap();
+    let store = WorkspaceStore::open(&state).unwrap();
+    let refs = store.load_refs().unwrap();
+    let revision = store.load_revision(refs.head()).unwrap();
+    assert_eq!(3, revision.schema_version());
+    assert_eq!(Some(&lineage), revision.transform_lineage());
+    assert_eq!(artifact.head_revision_id, revision.revision_id());
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn lineage_rejects_wrong_id_or_edited_output_before_workspace_creation() {
+    let fixture = workflow_fixture("lineage-hostile");
+    let planned = plan_transform(fixture.request()).unwrap();
+    apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    let wrong_state = fixture.root.join("wrong-state");
+    assert!(
+        initialize_jsonl_workspace_with_receipt(
+            &fixture.output,
+            &wrong_state,
+            "other_id",
+            None,
+            Some(&fixture.receipt()),
+        )
+        .is_err()
+    );
+    assert!(!wrong_state.exists());
+
+    fs::write(&fixture.output, "{\"id\":\"1\",\"value\":\"edited\"}\n").unwrap();
+    let edited_state = fixture.root.join("edited-state");
+    assert!(
+        initialize_jsonl_workspace_with_receipt(
+            &fixture.output,
+            &edited_state,
+            "id",
+            None,
+            Some(&fixture.receipt()),
+        )
+        .is_err()
+    );
+    assert!(!edited_state.exists());
     let _ = fs::remove_dir_all(fixture.root);
 }
 

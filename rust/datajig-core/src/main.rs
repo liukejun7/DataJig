@@ -17,7 +17,7 @@ use datajig_core::{
     check_subset_view, check_workspace, command_catalog, command_descriptor, command_names,
     compact_summary, create_inventory, create_review, create_snapshot, diff_jsonl_records,
     diff_manifests, draft_jsonl_patch, export_training_bundle_with_view_at_revision, get_finding,
-    initialize_jsonl_workspace_with_policy, initialize_workspace, inspect_jsonl, inspect_tabular,
+    initialize_jsonl_workspace_with_receipt, initialize_workspace, inspect_jsonl, inspect_tabular,
     inspect_training_bundle_with_consumer, inspect_training_consumption, inspect_transform,
     install_repository, is_patchable_quality_code, list_findings, load_manifest, load_report,
     locate_changeset_finding, manifest_diff_page, materialize_revision, plan_changeset,
@@ -99,6 +99,9 @@ enum Command {
         /// Immutable JSONL quality policy to pin to this workspace.
         #[arg(long)]
         policy: Option<PathBuf>,
+        /// Verified transform receipt that exactly binds this JSONL source.
+        #[arg(long)]
+        source_receipt: Option<PathBuf>,
         /// Project-local state directory kept outside the dataset.
         #[arg(long, default_value = ".datajig")]
         state: PathBuf,
@@ -886,7 +889,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 "jsonl_subset_recipe_schema_versions": [datajig_core::JSONL_SUBSET_RECIPE_SCHEMA_VERSION],
                 "report_schema_versions": [1],
                 "workspace_schema_versions": [2, 3, 4],
-                "revision_schema_versions": [1, 2],
+                "revision_schema_versions": [1, 2, 3],
                 "changeset_schema_versions": [1, 2],
                 "remediation_plan_schema_versions": [1],
                 "dataset_reference_schemes": ["path", "inventory"],
@@ -989,6 +992,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             threads,
             id_field,
             policy,
+            source_receipt,
         } => {
             let artifact = if dataset.is_file() || id_field.is_some() {
                 let id_field = id_field.as_deref().ok_or_else(|| {
@@ -998,18 +1002,21 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                         anyhow::anyhow!("JSONL workspace initialization requires --id-field"),
                     )
                 })?;
-                initialize_jsonl_workspace_with_policy(
+                initialize_jsonl_workspace_with_receipt(
                     &dataset,
                     &state,
                     id_field,
                     policy.as_deref(),
+                    source_receipt.as_deref(),
                 )
             } else {
-                if policy.is_some() {
+                if policy.is_some() || source_receipt.is_some() {
                     return Err((
                         "INVALID_ARGUMENT",
                         2,
-                        anyhow::anyhow!("--policy is only valid for JSONL workspaces"),
+                        anyhow::anyhow!(
+                            "--policy and --source-receipt are only valid for JSONL workspaces"
+                        ),
                     ));
                 }
                 initialize_workspace(&dataset, &state, threads)

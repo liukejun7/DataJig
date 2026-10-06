@@ -625,12 +625,28 @@ pub fn initialize_jsonl_workspace_with_policy(
     id_field: &str,
     policy_path: Option<&Path>,
 ) -> Result<WorkspaceArtifact> {
+    initialize_jsonl_workspace_with_receipt(dataset, state, id_field, policy_path, None)
+}
+
+pub fn initialize_jsonl_workspace_with_receipt(
+    dataset: &Path,
+    state: &Path,
+    id_field: &str,
+    policy_path: Option<&Path>,
+    source_receipt: Option<&Path>,
+) -> Result<WorkspaceArtifact> {
     let dataset = dataset
         .canonicalize()
         .context("cannot resolve workspace JSONL dataset")?;
     if !dataset.is_file() {
         return Err(InvalidArgumentError::new("JSONL workspace dataset is not a file").into());
     }
+    let transform_lineage = source_receipt
+        .map(|receipt| {
+            crate::verify_transform_receipt(receipt, &dataset, id_field)
+                .and_then(|verified| crate::TransformLineage::from_verified_receipt(&verified))
+        })
+        .transpose()?;
     let state = safe_state_directory(state, &dataset)?;
     let state_dir = path_text(&state, "state directory")?;
     if state.join(WORKSPACE_FILE).exists() {
@@ -678,6 +694,7 @@ pub fn initialize_jsonl_workspace_with_policy(
             || existing.adapter() != "jsonl"
             || existing.state_id() != baseline_state_id
             || existing.dataset_content_id() != built.state().dataset_content_id()
+            || existing.transform_lineage() != transform_lineage.as_ref()
         {
             bail!("incomplete JSONL workspace initialization does not match the current dataset");
         }
@@ -689,12 +706,13 @@ pub fn initialize_jsonl_workspace_with_policy(
             env!("CARGO_PKG_VERSION").into(),
             "Initialize JSONL dataset workspace".into(),
         )?;
-        let created = DatasetRevision::new_record(
+        let created = DatasetRevision::new_record_with_lineage(
             None,
             baseline_state_id.clone(),
             built.state().dataset_content_id().into(),
             None,
             provenance,
+            transform_lineage,
             now_unix_ns()?,
         )?;
         store.publish_revision(&created)?;

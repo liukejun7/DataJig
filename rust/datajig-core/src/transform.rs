@@ -569,9 +569,11 @@ pub struct TransformReceipt {
     schema_version: u8,
     receipt_id: String,
     plan_id: String,
+    source_aliases: Vec<String>,
     source_content_ids: Vec<String>,
     sql_content_id: String,
     parameter_content_id: String,
+    provider: TransformProviderIdentity,
     provider_id: String,
     id_field: String,
     output_path: String,
@@ -586,9 +588,11 @@ pub struct TransformReceipt {
 struct TransformReceiptIdentity<'a> {
     schema_version: u8,
     plan_id: &'a str,
+    source_aliases: &'a [String],
     source_content_ids: &'a [String],
     sql_content_id: &'a str,
     parameter_content_id: &'a str,
+    provider: &'a TransformProviderIdentity,
     provider_id: &'a str,
     id_field: &'a str,
     output_path: &'a str,
@@ -619,6 +623,11 @@ impl TransformReceipt {
             schema_version: TRANSFORM_RECEIPT_SCHEMA_VERSION,
             receipt_id: String::new(),
             plan_id: plan.plan_id.clone(),
+            source_aliases: plan
+                .sources
+                .iter()
+                .map(|source| source.alias.clone())
+                .collect(),
             source_content_ids: plan
                 .sources
                 .iter()
@@ -626,6 +635,7 @@ impl TransformReceipt {
                 .collect(),
             sql_content_id: plan.sql_content_id.clone(),
             parameter_content_id: plan.parameter_content_id.clone(),
+            provider: plan.provider.clone(),
             provider_id: plan.provider_id.clone(),
             id_field: plan.id_field.clone(),
             output_path: evidence.output_path,
@@ -636,6 +646,7 @@ impl TransformReceipt {
             unique_ids: evidence.unique_ids,
         };
         value.receipt_id = value.compute_id()?;
+        value.validate()?;
         Ok(value)
     }
 
@@ -664,9 +675,11 @@ impl TransformReceipt {
         TransformReceiptIdentity {
             schema_version: self.schema_version,
             plan_id: &self.plan_id,
+            source_aliases: &self.source_aliases,
             source_content_ids: &self.source_content_ids,
             sql_content_id: &self.sql_content_id,
             parameter_content_id: &self.parameter_content_id,
+            provider: &self.provider,
             provider_id: &self.provider_id,
             id_field: &self.id_field,
             output_path: &self.output_path,
@@ -691,6 +704,7 @@ impl TransformReceipt {
             || self.kind != "transform_receipt"
             || self.schema_version != TRANSFORM_RECEIPT_SCHEMA_VERSION
             || self.source_content_ids.is_empty()
+            || self.source_aliases.len() != self.source_content_ids.len()
             || self.plan_id.is_empty()
             || self.id_field.is_empty()
             || self.output_path.is_empty()
@@ -699,6 +713,39 @@ impl TransformReceipt {
             || self.receipt_id != self.compute_id()?
         {
             return Err(InvalidArgumentError::new("transform receipt identity is invalid").into());
+        }
+        self.provider.validate()?;
+        if self.provider.provider_id() != self.provider_id {
+            return Err(InvalidArgumentError::new("transform receipt provider is invalid").into());
+        }
+        crate::revision::validate_content_id(&self.receipt_id, "xformed", "receipt_id")?;
+        crate::revision::validate_content_id(&self.plan_id, "xform", "plan_id")?;
+        crate::revision::validate_content_id(&self.sql_content_id, "sql", "sql_content_id")?;
+        crate::revision::validate_content_id(
+            &self.parameter_content_id,
+            "params",
+            "parameter_content_id",
+        )?;
+        crate::revision::validate_content_id(&self.provider_id, "provider", "provider_id")?;
+        crate::revision::validate_content_id(
+            &self.output_content_id,
+            "prepared",
+            "output_content_id",
+        )?;
+        if self.schema.is_empty()
+            || self.schema.len() > MAX_TRANSFORM_OUTPUT_FIELDS
+            || self.rows > MAX_TRANSFORM_OUTPUT_ROWS
+            || self.bytes > MAX_TRANSFORM_OUTPUT_BYTES
+            || !self.schema.iter().any(|field| field.name == self.id_field)
+            || self
+                .source_aliases
+                .iter()
+                .zip(self.source_aliases.iter().skip(1))
+                .any(|(left, right)| left >= right)
+            || self.source_aliases.iter().any(|alias| !valid_alias(alias))
+            || self.source_content_ids.iter().any(String::is_empty)
+        {
+            return Err(InvalidArgumentError::new("transform receipt evidence is invalid").into());
         }
         Ok(())
     }
@@ -737,6 +784,30 @@ impl TransformReceipt {
 
     pub fn unique_ids(&self) -> u64 {
         self.unique_ids
+    }
+
+    pub fn source_content_ids(&self) -> &[String] {
+        &self.source_content_ids
+    }
+
+    pub fn source_aliases(&self) -> &[String] {
+        &self.source_aliases
+    }
+
+    pub fn sql_content_id(&self) -> &str {
+        &self.sql_content_id
+    }
+
+    pub fn parameter_content_id(&self) -> &str {
+        &self.parameter_content_id
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn provider(&self) -> &TransformProviderIdentity {
+        &self.provider
     }
 }
 

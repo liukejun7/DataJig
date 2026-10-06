@@ -96,6 +96,22 @@ pub struct TransformInfoArtifact {
     pub verified: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct VerifiedTransformReceipt {
+    receipt: TransformReceipt,
+    receipt_path: PathBuf,
+}
+
+impl VerifiedTransformReceipt {
+    pub fn receipt(&self) -> &TransformReceipt {
+        &self.receipt
+    }
+
+    pub fn receipt_path(&self) -> &Path {
+        &self.receipt_path
+    }
+}
+
 pub fn plan_transform(request: TransformPlanRequest) -> Result<TransformPlanArtifact> {
     let limits = TransformLimits::v1();
     let plan_path = resolve_new_path(&request.plan_path, "transform plan")?;
@@ -271,6 +287,34 @@ pub fn inspect_transform(path: &Path, verify: bool) -> Result<TransformInfoArtif
         }
         _ => Err(InvalidArgumentError::new("unsupported transform artifact kind").into()),
     }
+}
+
+pub fn verify_transform_receipt(
+    receipt_path: &Path,
+    output: &Path,
+    id_field: &str,
+) -> Result<VerifiedTransformReceipt> {
+    let receipt_path = receipt_path
+        .canonicalize()
+        .context("cannot resolve transform receipt")?;
+    let output = output
+        .canonicalize()
+        .context("cannot resolve transform receipt output")?;
+    let receipt = TransformReceipt::from_path(&receipt_path)?;
+    let bound_output = Path::new(receipt.output_path())
+        .canonicalize()
+        .context("cannot resolve output bound by transform receipt")?;
+    if bound_output != output || receipt.id_field() != id_field {
+        return Err(TransformDriftError::new(
+            "transform receipt does not bind this output path and ID field",
+        )
+        .into());
+    }
+    verify_receipt_output(&receipt)?;
+    Ok(VerifiedTransformReceipt {
+        receipt,
+        receipt_path,
+    })
 }
 
 struct TransformRun {
