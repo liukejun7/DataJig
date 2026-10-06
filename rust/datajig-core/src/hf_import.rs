@@ -224,7 +224,7 @@ fn hub_http_agent() -> Agent {
     Agent::config_builder()
         .tls_config(
             TlsConfig::builder()
-                .provider(TlsProvider::NativeTls)
+                .provider(TlsProvider::Rustls)
                 .root_certs(RootCerts::PlatformVerifier)
                 .build(),
         )
@@ -1497,7 +1497,7 @@ mod tests {
         let agent = hub_http_agent();
         let tls = agent.config().tls_config();
 
-        assert_eq!(TlsProvider::NativeTls, tls.provider());
+        assert_eq!(TlsProvider::Rustls, tls.provider());
         assert!(matches!(tls.root_certs(), RootCerts::PlatformVerifier));
         assert!(!tls.disable_verification());
     }

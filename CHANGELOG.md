@@ -46,6 +46,9 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Hugging Face HTTPS now uses Rustls with platform certificate verification,
+  removing the system OpenSSL build dependency; Unix metadata preservation is
+  portable across Linux and macOS mode types.
 - Training-bundle publication now reports an actionable filesystem diagnostic
   when atomic no-replace directory publication is unavailable. File publication
   uses a safe hard-link fallback while preserving no-clobber semantics.

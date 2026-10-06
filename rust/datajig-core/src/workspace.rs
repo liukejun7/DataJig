@@ -2904,7 +2904,13 @@ fn apply_transferable_metadata(metadata: &TransferableMetadata, file: &File) -> 
         Some(Gid::from_raw(metadata.gid)),
     )
     .context("cannot preserve JSONL patch source ownership")?;
-    rustix::fs::fchmod(file, Mode::from_bits_truncate(metadata.mode))
+    // `rustix::fs::RawMode` is `u32` on Linux and `u16` on Apple platforms.
+    #[allow(clippy::useless_conversion)]
+    let mode = metadata
+        .mode
+        .try_into()
+        .context("JSONL patch source permissions exceed the platform mode range")?;
+    rustix::fs::fchmod(file, Mode::from_bits_truncate(mode))
         .context("cannot preserve JSONL patch source permissions")?;
     for (name, value) in &metadata.xattrs {
         rustix::fs::fsetxattr(file, name.as_c_str(), value, XattrFlags::empty())
