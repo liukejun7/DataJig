@@ -148,6 +148,7 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         self.assertIn("gh release create", workflow)
         self.assertIn("gh release upload", workflow)
         self.assertIn("dist/*.whl", workflow)
+        self.assertGreaterEqual(workflow.count('--repo "$GITHUB_REPOSITORY"'), 3)
 
 
 def forbidden_public_path(path: str) -> bool:
