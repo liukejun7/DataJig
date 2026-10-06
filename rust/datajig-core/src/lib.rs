@@ -34,6 +34,7 @@ mod transform;
 mod transform_output;
 mod transform_provider;
 mod transform_sql;
+mod transform_workflow;
 mod tutorial;
 mod workspace;
 mod workspace_store;
@@ -172,7 +173,7 @@ pub use transform::{
 };
 pub use transform_output::{
     ProviderObservedSchema, TransformOutputError, TransformOutputErrorKind,
-    VerifiedTransformOutput, verify_transform_candidate,
+    VerifiedTransformOutput, verify_transform_candidate, verify_transform_candidate_read_only,
 };
 pub use transform_provider::{
     ProviderExecutionSummary, ProviderRequest, StagedTransformSource, TransformInputSpec,
@@ -182,6 +183,11 @@ pub use transform_provider::{
 pub use transform_sql::{
     TransformOrderContract, TransformOrderError, TransformSqlParseError, TransformSqlPolicyError,
     ValidatedTransformQuery, validate_transform_query,
+};
+pub use transform_workflow::{
+    TransformApplyArtifact, TransformDriftError, TransformInfoArtifact,
+    TransformNotAuthorizedError, TransformPlanArtifact, TransformPlanRequest, apply_transform,
+    inspect_transform, plan_transform,
 };
 pub use tutorial::{TutorialArtifact, run_tutorial};
 #[cfg(unix)]

@@ -9,20 +9,22 @@ use datajig_core::{
     PatchNotAuthorizedError, PrepareInvalidDataError, PrepareNotAuthorizedError,
     RepositoryComponents, RepositoryConflictError, RevisionContentCorruptError,
     RevisionContentUnavailableError, Severity, StaleConsumptionInputError, StalePrepareInputError,
-    TrainingExportConfig, UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError,
-    WorkspaceLock, WorkspaceStore, agent_contract_id, apply_hf_import, apply_jsonl_patch,
-    apply_prepare, artifact_schema, artifact_schema_names, begin_changeset, check_changeset,
-    check_repository, check_subset_view, check_workspace, command_catalog, command_descriptor,
-    command_names, compact_summary, create_inventory, create_review, create_snapshot,
-    diff_jsonl_records, diff_manifests, draft_jsonl_patch,
-    export_training_bundle_with_view_at_revision, get_finding,
+    TrainingExportConfig, TransformDriftError, TransformInputSpec, TransformNotAuthorizedError,
+    TransformProviderProtocolError, TransformProviderTimeoutError, TransformSourceFormat,
+    UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError, WorkspaceLock, WorkspaceStore,
+    agent_contract_id, apply_hf_import, apply_jsonl_patch, apply_prepare, apply_transform,
+    artifact_schema, artifact_schema_names, begin_changeset, check_changeset, check_repository,
+    check_subset_view, check_workspace, command_catalog, command_descriptor, command_names,
+    compact_summary, create_inventory, create_review, create_snapshot, diff_jsonl_records,
+    diff_manifests, draft_jsonl_patch, export_training_bundle_with_view_at_revision, get_finding,
     initialize_jsonl_workspace_with_policy, initialize_workspace, inspect_jsonl, inspect_tabular,
-    inspect_training_bundle_with_consumer, inspect_training_consumption, install_repository,
-    is_patchable_quality_code, list_findings, load_manifest, load_report, locate_changeset_finding,
-    manifest_diff_page, materialize_revision, plan_changeset, plan_hf_import, plan_prepare,
-    plan_training_consumption, plan_workspace, preview_jsonl_patch,
-    resolve_optional_changeset_context, revision_log, run_tutorial, seal_changeset, seal_workspace,
-    stage_changeset, status_changeset, status_workspace, undo_jsonl_patch, write_agent_skill,
+    inspect_training_bundle_with_consumer, inspect_training_consumption, inspect_transform,
+    install_repository, is_patchable_quality_code, list_findings, load_manifest, load_report,
+    locate_changeset_finding, manifest_diff_page, materialize_revision, plan_changeset,
+    plan_hf_import, plan_prepare, plan_training_consumption, plan_transform, plan_workspace,
+    preview_jsonl_patch, resolve_optional_changeset_context, revision_log, run_tutorial,
+    seal_changeset, seal_workspace, stage_changeset, status_changeset, status_workspace,
+    undo_jsonl_patch, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -393,6 +395,46 @@ enum Command {
         #[arg(long)]
         plan: PathBuf,
     },
+    /// Execute and persist an immutable plan for a bounded local SQL transform.
+    #[command(
+        after_help = "Example:\n  datajig transform-plan --input events=data/events.csv --sql transform.sql --id-field id --output prepared.jsonl --plan transform-plan.json\n\nEach --input uses ALIAS=PATH. Parameters are a JSON array of scalars. Multi-row SQL must end its top-level ORDER BY with the output ID alias. Requires: pip install 'datajig[duckdb]'."
+    )]
+    TransformPlan {
+        /// Repeatable staged input in ALIAS=PATH form; supports CSV, Parquet, and JSONL.
+        #[arg(long = "input", required = true, value_name = "ALIAS=PATH")]
+        inputs: Vec<String>,
+        /// UTF-8 SELECT query (maximum 64 KiB).
+        #[arg(long)]
+        sql: PathBuf,
+        /// Optional JSON array containing at most 256 scalar positional parameters.
+        #[arg(long)]
+        params: Option<PathBuf>,
+        /// Required output record identity field.
+        #[arg(long)]
+        id_field: String,
+        /// Future new canonical JSONL output path.
+        #[arg(long)]
+        output: PathBuf,
+        /// New immutable transform plan artifact.
+        #[arg(long)]
+        plan: PathBuf,
+    },
+    /// Re-execute and atomically publish one accepted transform plan.
+    TransformApply {
+        /// Immutable transform plan artifact.
+        plan: PathBuf,
+        /// Exact xform_... identity returned by transform-plan.
+        #[arg(long)]
+        accept_plan: String,
+    },
+    /// Inspect and optionally verify a transform plan or receipt.
+    TransformInfo {
+        /// Transform plan or transform receipt artifact.
+        artifact: PathBuf,
+        /// Verify artifact identity and any published receipt output without executing SQL.
+        #[arg(long)]
+        verify: bool,
+    },
     /// Promote a fresh PASS review to the workspace's last-good baseline.
     Seal {
         /// Project-local state directory created by init.
@@ -563,7 +605,7 @@ fn main() {
             | "changeset-stage" | "plan" | "log" | "locate" | "patch-apply" | "patch-draft"
             | "patch-preview" | "patch-undo" | "hf-import-apply" | "hf-import-plan"
             | "prepare-apply" | "prepare-plan" | "repository-check" | "repository-install" | "seal"
-            | "status",
+            | "status" | "transform-apply" | "transform-info" | "transform-plan",
         ) => "INVALID_ARGUMENT",
         _ => "ARGUMENT_ERROR",
     };
@@ -1632,6 +1674,74 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 })
             );
         }
+        Command::TransformPlan {
+            inputs,
+            sql,
+            params,
+            id_field,
+            output,
+            plan,
+        } => {
+            let python = transform_provider_python()?;
+            let inputs = parse_transform_inputs(&inputs)?;
+            let parameters = load_transform_parameters(params.as_deref())?;
+            let artifact = plan_transform(datajig_core::TransformPlanRequest {
+                inputs,
+                sql_path: sql,
+                parameters,
+                id_field,
+                output_path: output,
+                plan_path: plan,
+                python,
+            })
+            .map_err(transform_command_error)?;
+            println!(
+                "{}",
+                json!({
+                    "agent_api_version": AGENT_API_VERSION,
+                    "backend": "rust",
+                    "kind": "transform_planned",
+                    "decision": "apply",
+                    "next_actions": [{"command": "transform-apply", "args": [
+                        artifact.plan, "--accept-plan", artifact.plan_id
+                    ]}],
+                    "artifact": artifact
+                })
+            );
+        }
+        Command::TransformApply { plan, accept_plan } => {
+            let python = transform_provider_python()?;
+            let artifact =
+                apply_transform(&plan, &accept_plan, &python).map_err(transform_command_error)?;
+            println!(
+                "{}",
+                json!({
+                    "agent_api_version": AGENT_API_VERSION,
+                    "backend": "rust",
+                    "kind": "transform_applied",
+                    "decision": "ready",
+                    "next_actions": [{"command": "init", "args": [
+                        artifact.output, "--id-field", artifact.id_field,
+                        "--source-receipt", artifact.receipt
+                    ]}],
+                    "artifact": artifact
+                })
+            );
+        }
+        Command::TransformInfo { artifact, verify } => {
+            let info = inspect_transform(&artifact, verify).map_err(transform_command_error)?;
+            println!(
+                "{}",
+                json!({
+                    "agent_api_version": AGENT_API_VERSION,
+                    "backend": "rust",
+                    "kind": "transform_info",
+                    "decision": "inspect",
+                    "next_actions": [],
+                    "artifact": info
+                })
+            );
+        }
         Command::PatchUndo { undo_id, state } => {
             let artifact =
                 undo_jsonl_patch(&state, &undo_id).map_err(patch_transaction_command_error)?;
@@ -2042,6 +2152,122 @@ fn validate_command_arguments(command: &Command) -> Result<(), CommandError> {
             .map_err(training_export_command_error)?;
     }
     Ok(())
+}
+
+fn parse_transform_inputs(values: &[String]) -> Result<Vec<TransformInputSpec>, CommandError> {
+    values
+        .iter()
+        .map(|value| {
+            let (alias, path) = value.split_once('=').ok_or_else(|| {
+                (
+                    "INVALID_ARGUMENT",
+                    2,
+                    anyhow::anyhow!(
+                        "--input must use ALIAS=PATH, for example --input events=data/events.csv"
+                    ),
+                )
+            })?;
+            let path = PathBuf::from(path);
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase);
+            let format = match extension.as_deref() {
+                Some("csv") => TransformSourceFormat::Csv,
+                Some("parquet" | "pq") => TransformSourceFormat::Parquet,
+                Some("jsonl" | "ndjson") => TransformSourceFormat::Jsonl,
+                _ => {
+                    return Err((
+                        "INVALID_ARGUMENT",
+                        2,
+                        anyhow::anyhow!(
+                            "transform input paths must end in .csv, .parquet, .pq, .jsonl, or .ndjson"
+                        ),
+                    ));
+                }
+            };
+            TransformInputSpec::new(alias.into(), path, format)
+                .map_err(|error| ("INVALID_ARGUMENT", 2, error))
+        })
+        .collect()
+}
+
+fn load_transform_parameters(path: Option<&std::path::Path>) -> Result<Vec<Value>, CommandError> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let payload = std::fs::read(path)
+        .map_err(anyhow::Error::from)
+        .map_err(|error| ("INVALID_ARGUMENT", 2, error))?;
+    if payload.len() > 65_536 {
+        return Err((
+            "INVALID_ARGUMENT",
+            2,
+            anyhow::anyhow!("transform parameter JSON exceeds 65536 bytes"),
+        ));
+    }
+    let parameters: Vec<Value> = serde_json::from_slice(&payload).map_err(|error| {
+        (
+            "INVALID_ARGUMENT",
+            2,
+            anyhow::anyhow!("transform parameters must be a JSON array: {error}"),
+        )
+    })?;
+    if parameters.len() > 256
+        || parameters
+            .iter()
+            .any(|value| value.is_array() || value.is_object())
+    {
+        return Err((
+            "INVALID_ARGUMENT",
+            2,
+            anyhow::anyhow!("transform parameters must contain at most 256 JSON scalars"),
+        ));
+    }
+    Ok(parameters)
+}
+
+fn transform_provider_python() -> Result<PathBuf, CommandError> {
+    std::env::var_os("_DATAJIG_PROVIDER_PYTHON")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            (
+                "PROVIDER_UNAVAILABLE",
+                2,
+                anyhow::anyhow!(
+                    "the DuckDB provider interpreter is not bound; install with pip install 'datajig[duckdb]' and invoke the datajig Python entrypoint"
+                ),
+            )
+        })
+}
+
+fn transform_command_error(error: anyhow::Error) -> CommandError {
+    let code = if error
+        .downcast_ref::<TransformNotAuthorizedError>()
+        .is_some()
+    {
+        "TRANSFORM_NOT_AUTHORIZED"
+    } else if error.downcast_ref::<TransformDriftError>().is_some() {
+        "TRANSFORM_DRIFT"
+    } else if error
+        .downcast_ref::<TransformProviderTimeoutError>()
+        .is_some()
+    {
+        "PROVIDER_TIMEOUT"
+    } else if error
+        .downcast_ref::<TransformProviderProtocolError>()
+        .is_some()
+    {
+        "PROVIDER_PROTOCOL_ERROR"
+    } else if error.downcast_ref::<OutputExistsError>().is_some() {
+        "OUTPUT_EXISTS"
+    } else if error.downcast_ref::<InvalidArgumentError>().is_some() {
+        "INVALID_ARGUMENT"
+    } else {
+        "TRANSFORM_FAILED"
+    };
+    (code, 2, error)
 }
 
 fn lock_command_workspace(command: &Command) -> Result<Option<WorkspaceLock>, CommandError> {

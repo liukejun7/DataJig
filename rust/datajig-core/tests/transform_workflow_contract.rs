@@ -3,9 +3,11 @@ use datajig_core::{
     MAX_TRANSFORM_OUTPUT_ROWS, MAX_TRANSFORM_PARAMETER_BYTES, MAX_TRANSFORM_PARAMETERS,
     MAX_TRANSFORM_SOURCE_BYTES, MAX_TRANSFORM_SOURCE_ROWS, MAX_TRANSFORM_SQL_BYTES,
     TRANSFORM_PLAN_SCHEMA_VERSION, TRANSFORM_RECEIPT_SCHEMA_VERSION, TransformExecutionEvidence,
-    TransformExpectedOutput, TransformField, TransformLimits, TransformOutputError,
-    TransformOutputErrorKind, TransformPlan, TransformPlanInput, TransformProviderIdentity,
-    TransformReceipt, TransformSource, TransformSourceFormat, verify_transform_candidate,
+    TransformExpectedOutput, TransformField, TransformInputSpec, TransformLimits,
+    TransformOutputError, TransformOutputErrorKind, TransformPlan, TransformPlanInput,
+    TransformPlanRequest, TransformProviderIdentity, TransformReceipt, TransformSource,
+    TransformSourceFormat, apply_transform, inspect_transform, plan_transform,
+    verify_transform_candidate,
 };
 use serde_json::json;
 use std::fs;
@@ -382,6 +384,62 @@ fn output_verifier_accepts_256_fields_and_rejects_the_next() {
     let _ = fs::remove_file(candidate);
 }
 
+#[test]
+fn workflow_plan_apply_info_is_deterministic_and_recoverable() {
+    let fixture = workflow_fixture("lifecycle");
+    let planned = plan_transform(fixture.request()).unwrap();
+    assert!(fixture.plan.exists());
+    assert!(!fixture.output.exists());
+    assert!(!fixture.receipt().exists());
+    assert_eq!(
+        planned.plan_id,
+        TransformPlan::from_path(&fixture.plan).unwrap().plan_id()
+    );
+
+    let applied = apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    assert!(fixture.output.exists());
+    assert!(fixture.receipt().exists());
+    assert!(!applied.recovered);
+    assert!(!applied.already_applied);
+    let output_before = fs::read(&fixture.output).unwrap();
+    let receipt_before = fs::read(fixture.receipt()).unwrap();
+
+    let idempotent = apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    assert!(idempotent.already_applied);
+    assert_eq!(output_before, fs::read(&fixture.output).unwrap());
+    assert_eq!(receipt_before, fs::read(fixture.receipt()).unwrap());
+
+    fs::remove_file(fixture.receipt()).unwrap();
+    let recovered = apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    assert!(recovered.recovered);
+    assert!(!recovered.already_applied);
+    assert_eq!(output_before, fs::read(&fixture.output).unwrap());
+    let info = inspect_transform(&fixture.receipt(), true).unwrap();
+    assert!(info.verified);
+    assert_eq!(planned.plan_id, info.plan_id);
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
+#[test]
+fn workflow_apply_rejects_drift_and_collisions_without_partial_public_state() {
+    let fixture = workflow_fixture("drift");
+    let planned = plan_transform(fixture.request()).unwrap();
+    fs::write(&fixture.source, "id,value\n1,changed\n2,b\n").unwrap();
+    assert!(apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).is_err());
+    assert!(!fixture.output.exists());
+    assert!(!fixture.receipt().exists());
+
+    fs::write(&fixture.source, "id,value\n1,a\n2,b\n").unwrap();
+    fs::write(&fixture.output, "do-not-overwrite\n").unwrap();
+    assert!(apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).is_err());
+    assert_eq!(
+        "do-not-overwrite\n",
+        fs::read_to_string(&fixture.output).unwrap()
+    );
+    assert!(!fixture.receipt().exists());
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
 fn plan_input() -> TransformPlanInput {
     let schema = vec![
         TransformField::new("id".into(), "utf8".into(), false).unwrap(),
@@ -455,4 +513,120 @@ fn assert_output_error(
     );
     assert!(!canonical.exists(), "{label} left a canonical artifact");
     let _ = fs::remove_file(candidate);
+}
+
+struct WorkflowFixture {
+    root: PathBuf,
+    source: PathBuf,
+    sql: PathBuf,
+    output: PathBuf,
+    plan: PathBuf,
+    provider: PathBuf,
+}
+
+impl WorkflowFixture {
+    fn request(&self) -> TransformPlanRequest {
+        TransformPlanRequest {
+            inputs: vec![
+                TransformInputSpec::new(
+                    "events".into(),
+                    self.source.clone(),
+                    TransformSourceFormat::Csv,
+                )
+                .unwrap(),
+            ],
+            sql_path: self.sql.clone(),
+            parameters: vec![],
+            id_field: "id".into(),
+            output_path: self.output.clone(),
+            plan_path: self.plan.clone(),
+            python: self.provider.clone(),
+        }
+    }
+
+    fn receipt(&self) -> PathBuf {
+        PathBuf::from(format!("{}.datajig.transform.json", self.output.display()))
+    }
+}
+
+fn workflow_fixture(label: &str) -> WorkflowFixture {
+    let root = temporary_path(label);
+    fs::create_dir(&root).unwrap();
+    let source = root.join("events.csv");
+    fs::write(&source, "id,value\n1,a\n2,b\n").unwrap();
+    let sql = root.join("transform.sql");
+    fs::write(&sql, "SELECT id, value FROM events ORDER BY id").unwrap();
+    let output = root.join("prepared.jsonl");
+    let plan = root.join("transform-plan.json");
+    let provider = write_transform_provider(&root);
+    WorkflowFixture {
+        root,
+        source,
+        sql,
+        output,
+        plan,
+        provider,
+    }
+}
+
+fn write_transform_provider(root: &std::path::Path) -> PathBuf {
+    let identity = TransformProviderIdentity::create(
+        "0.6.0".into(),
+        "1.5.6".into(),
+        "CPython".into(),
+        "3.12.14".into(),
+    )
+    .unwrap();
+    let output = "{\"id\":\"1\",\"value\":\"a\"}\n{\"id\":\"2\",\"value\":\"b\"}\n";
+    let probe = json!({
+        "protocol": "datajig.transform-provider.v1",
+        "protocol_version": 1,
+        "correlation_id": "probe",
+        "status": "ok",
+        "provider": identity,
+        "lockdown_supported": true
+    });
+    let execute = json!({
+        "protocol": "datajig.transform-provider.v1",
+        "protocol_version": 1,
+        "correlation_id": "__CORRELATION__",
+        "status": "ok",
+        "provider": identity,
+        "schema": [
+            {"name": "id", "value_type": "string", "nullable": false},
+            {"name": "value", "value_type": "string", "nullable": false}
+        ],
+        "rows": 2,
+        "bytes": output.len(),
+        "candidate_complete": true
+    });
+    let script = format!(
+        concat!(
+            "#!/bin/sh\n",
+            "payload=$(dd 2>/dev/null)\n",
+            "case \"$payload\" in\n",
+            "  *'\"operation\":\"probe\"'*) printf '%s\\n' '{probe}' ;;\n",
+            "  *)\n",
+            "    candidate=$(printf '%s' \"$payload\" | sed -n 's/.*\"candidate_path\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+            "    correlation=$(printf '%s' \"$payload\" | sed -n 's/.*\"correlation_id\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+            "    printf '%s' '{output}' > \"$candidate\"\n",
+            "    printf '%s\\n' '{execute}' | sed \"s/__CORRELATION__/$correlation/\" ;;\n",
+            "esac\n"
+        ),
+        probe = shell_single_quote(&probe.to_string()),
+        output = shell_single_quote(output),
+        execute = shell_single_quote(&execute.to_string()),
+    );
+    let path = root.join("provider.sh");
+    fs::write(&path, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    path
+}
+
+fn shell_single_quote(value: &str) -> String {
+    value.replace('\'', "'\"'\"'")
 }

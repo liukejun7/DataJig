@@ -73,6 +73,40 @@ pub fn verify_transform_candidate(
     observed_schema: &ProviderObservedSchema,
     limits: &TransformLimits,
 ) -> Result<VerifiedTransformOutput> {
+    verify_transform_candidate_mode(
+        candidate,
+        canonical,
+        id_field,
+        observed_schema,
+        limits,
+        true,
+    )
+}
+
+pub fn verify_transform_candidate_read_only(
+    candidate: &Path,
+    id_field: &str,
+    observed_schema: &ProviderObservedSchema,
+    limits: &TransformLimits,
+) -> Result<VerifiedTransformOutput> {
+    verify_transform_candidate_mode(
+        candidate,
+        candidate,
+        id_field,
+        observed_schema,
+        limits,
+        false,
+    )
+}
+
+fn verify_transform_candidate_mode(
+    candidate: &Path,
+    canonical: &Path,
+    id_field: &str,
+    observed_schema: &ProviderObservedSchema,
+    limits: &TransformLimits,
+    write_canonical: bool,
+) -> Result<VerifiedTransformOutput> {
     let schema = validate_schema(observed_schema, id_field, limits)?;
     let candidate_metadata =
         fs::symlink_metadata(candidate).context("cannot inspect transform provider candidate")?;
@@ -89,10 +123,15 @@ pub fn verify_transform_candidate(
         ));
     }
     let source = File::open(candidate).context("cannot open transform provider candidate")?;
-    let output = create_private_file(canonical)?;
-    let mut guard = CanonicalGuard::new(canonical);
     let mut reader = BufReader::new(source);
-    let mut writer = BufWriter::new(output);
+    let mut guard = None;
+    let mut writer: Box<dyn Write> = if write_canonical {
+        let output = create_private_file(canonical)?;
+        guard = Some(CanonicalGuard::new(canonical));
+        Box::new(BufWriter::new(output))
+    } else {
+        Box::new(std::io::sink())
+    };
     let mut line = Vec::new();
     let mut rows = 0u64;
     let mut bytes = 0u64;
@@ -197,8 +236,13 @@ pub fn verify_transform_candidate(
         bytes = next_bytes;
     }
     writer.flush()?;
-    writer.get_ref().sync_all()?;
-    guard.keep();
+    drop(writer);
+    if write_canonical {
+        File::open(canonical)?.sync_all()?;
+    }
+    if let Some(guard) = &mut guard {
+        guard.keep();
+    }
     Ok(VerifiedTransformOutput {
         schema: observed_schema.to_vec(),
         rows,

@@ -517,6 +517,38 @@ impl TransformPlan {
     pub fn expected(&self) -> &TransformExpectedOutput {
         &self.expected
     }
+
+    pub fn sources(&self) -> &[TransformSource] {
+        &self.sources
+    }
+
+    pub fn sql_path(&self) -> &str {
+        &self.sql_path
+    }
+
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+
+    pub fn parameters(&self) -> &[Value] {
+        &self.parameters
+    }
+
+    pub fn id_field(&self) -> &str {
+        &self.id_field
+    }
+
+    pub fn output_path(&self) -> &str {
+        &self.output_path
+    }
+
+    pub fn provider(&self) -> &TransformProviderIdentity {
+        &self.provider
+    }
+
+    pub fn limits(&self) -> &TransformLimits {
+        &self.limits
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -541,6 +573,7 @@ pub struct TransformReceipt {
     sql_content_id: String,
     parameter_content_id: String,
     provider_id: String,
+    id_field: String,
     output_path: String,
     output_content_id: String,
     schema: Vec<TransformField>,
@@ -557,6 +590,7 @@ struct TransformReceiptIdentity<'a> {
     sql_content_id: &'a str,
     parameter_content_id: &'a str,
     provider_id: &'a str,
+    id_field: &'a str,
     output_path: &'a str,
     output_content_id: &'a str,
     schema: &'a [TransformField],
@@ -593,6 +627,7 @@ impl TransformReceipt {
             sql_content_id: plan.sql_content_id.clone(),
             parameter_content_id: plan.parameter_content_id.clone(),
             provider_id: plan.provider_id.clone(),
+            id_field: plan.id_field.clone(),
             output_path: evidence.output_path,
             output_content_id: evidence.output_content_id,
             schema: evidence.schema,
@@ -633,6 +668,7 @@ impl TransformReceipt {
             sql_content_id: &self.sql_content_id,
             parameter_content_id: &self.parameter_content_id,
             provider_id: &self.provider_id,
+            id_field: &self.id_field,
             output_path: &self.output_path,
             output_content_id: &self.output_content_id,
             schema: &self.schema,
@@ -656,6 +692,7 @@ impl TransformReceipt {
             || self.schema_version != TRANSFORM_RECEIPT_SCHEMA_VERSION
             || self.source_content_ids.is_empty()
             || self.plan_id.is_empty()
+            || self.id_field.is_empty()
             || self.output_path.is_empty()
             || self.output_content_id.is_empty()
             || self.unique_ids != self.rows
@@ -676,6 +713,30 @@ impl TransformReceipt {
 
     pub fn output_content_id(&self) -> &str {
         &self.output_content_id
+    }
+
+    pub fn output_path(&self) -> &str {
+        &self.output_path
+    }
+
+    pub fn id_field(&self) -> &str {
+        &self.id_field
+    }
+
+    pub fn schema(&self) -> &[TransformField] {
+        &self.schema
+    }
+
+    pub fn rows(&self) -> u64 {
+        self.rows
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub fn unique_ids(&self) -> u64 {
+        self.unique_ids
     }
 }
 

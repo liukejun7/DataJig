@@ -360,7 +360,7 @@ pub fn probe_transform_provider(
     python: &Path,
     limits: &TransformLimits,
 ) -> Result<TransformProviderIdentity> {
-    validate_provider_executable(python)?;
+    let python = validate_provider_executable(python)?;
     let payload = serde_json::to_vec(&serde_json::json!({
         "protocol": PROVIDER_PROTOCOL,
         "protocol_version": 1,
@@ -368,7 +368,7 @@ pub fn probe_transform_provider(
         "operation": "probe",
         "limits": limits,
     }))?;
-    let mut command = provider_command(python);
+    let mut command = provider_command(&python);
     let mut child = command
         .spawn()
         .context("cannot start transform provider probe")?;
@@ -432,10 +432,10 @@ pub fn execute_transform_provider(
     request: &ProviderRequest,
     timeout: Duration,
 ) -> Result<ProviderExecutionSummary> {
-    validate_provider_executable(python)?;
+    let python = validate_provider_executable(python)?;
     let request_payload = request.to_json()?;
     let before = directory_entries(parent_of(Path::new(&request.candidate_path))?)?;
-    let mut command = provider_command(python);
+    let mut command = provider_command(&python);
     let mut child = command.spawn().context("cannot start transform provider")?;
     child
         .stdin
@@ -671,16 +671,19 @@ fn terminate_provider_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-fn validate_provider_executable(python: &Path) -> Result<()> {
+fn validate_provider_executable(python: &Path) -> Result<PathBuf> {
+    let resolved = python
+        .canonicalize()
+        .context("cannot resolve transform provider executable")?;
     let executable =
-        fs::symlink_metadata(python).context("cannot inspect transform provider executable")?;
-    if executable.file_type().is_symlink() || !executable.is_file() {
+        fs::symlink_metadata(&resolved).context("cannot inspect transform provider executable")?;
+    if !executable.is_file() {
         return Err(TransformProviderProtocolError(
             "provider executable must be a regular file".into(),
         )
         .into());
     }
-    Ok(())
+    Ok(python.to_owned())
 }
 
 fn provider_command(python: &Path) -> Command {
