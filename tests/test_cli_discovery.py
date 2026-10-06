@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import unittest
@@ -62,11 +63,33 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("transform-apply", completed.stdout)
         self.assertIn("transform-info", completed.stdout)
         self.assertIn("review-plan", completed.stdout)
+        self.assertIn("pipeline", completed.stdout)
+        self.assertIn("lineage", completed.stdout)
         self.assertNotRegex(completed.stdout, r"(?m)^  plan\s")
         self.assertIn(
             "prepare/import -> transform -> version -> review/seal -> export -> consume",
             completed.stdout,
         )
+
+    def test_capabilities_publish_python_pipeline_contract(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        environment["DATAJIG_NATIVE"] = str(self.native)
+        completed = subprocess.run(
+            ("python", "-m", "datajig.cli", "capabilities"),
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        payload = json.loads(completed.stdout)
+        self.assertEqual([1], payload["pipeline_plan_schema_versions"])
+        self.assertEqual([1], payload["pipeline_receipt_schema_versions"])
+        self.assertEqual([1], payload["pipeline_lineage_schema_versions"])
+        self.assertTrue(payload["features"]["recoverable_pipeline"])
 
     def test_top_level_version_matches_installed_package_metadata(self) -> None:
         environment = os.environ.copy()

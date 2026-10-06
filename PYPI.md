@@ -66,6 +66,41 @@ datajig repository-check --root .
 
 ## Typical workflow
 
+For a complete local training-data delivery, install the DuckDB extra and use a
+single reviewed pipeline:
+
+```bash
+datajig pipeline plan --config pipeline.yaml --plan pipeline-plan.json
+datajig pipeline apply pipeline-plan.json --accept-plan pipe_...
+datajig pipeline info deliveries/my-training-data/pipeline-receipt.json --verify
+datajig lineage pipe_... --state workspace/.datajig --format text
+```
+
+The plan binds source bytes, SQL, target paths, export splits, and external run
+IDs. Apply uses OS locks, a durable recovery journal, detached revision sealing,
+HEAD compare-and-swap, and a delivery commit marker. Interrupted work requires
+explicit `--resume`; an identical update still delivers a bundle and consumer
+plans without inventing a new revision.
+
+An abbreviated configuration looks like this:
+
+```yaml
+schema_version: 1
+pipeline: {name: papers-train, provider: duckdb}
+target: {dataset: data/papers.jsonl, state: workspace/.datajig, mode: create}
+delivery: {output: deliveries/papers-train}
+inputs:
+  - {alias: papers, path: raw/papers.parquet, format: parquet}
+transform:
+  sql: SELECT paper_id AS id, title FROM papers ORDER BY id
+  id_field: id
+export: {split: [train=9, test=1], max_shard_records: 10000}
+consumption_plan:
+  - {consumer: huggingface, split: train, run_id: experiment-42}
+```
+
+Atomic commands remain available when a pipeline is not the right abstraction:
+
 ```bash
 datajig inspect data/papers.parquet --id-field paper_id
 datajig prepare-plan data/papers.parquet \

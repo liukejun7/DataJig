@@ -53,6 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pipeline_plan.add_argument("--config", type=Path, required=True)
     pipeline_plan.add_argument("--plan", type=Path, required=True)
+    pipeline_apply = pipeline_commands.add_parser(
+        "apply", help="execute or resume an accepted pipeline plan"
+    )
+    pipeline_apply.add_argument("plan", type=Path, nargs="?")
+    pipeline_apply.add_argument("--accept-plan")
+    pipeline_apply.add_argument("--config", type=Path)
+    pipeline_apply.add_argument("--auto-accept", action="store_true")
+    pipeline_apply.add_argument("--resume", action="store_true")
     pipeline_info = pipeline_commands.add_parser(
         "info", help="inspect or verify a pipeline artifact"
     )
@@ -60,6 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_info.add_argument("--format", choices=("json", "markdown"), default="json")
     pipeline_info.add_argument("--output", type=Path)
     pipeline_info.add_argument("--verify", action="store_true")
+    pipeline_gc = pipeline_commands.add_parser(
+        "gc", help="inspect or clean completed pipeline execution journals"
+    )
+    pipeline_gc.add_argument("--state", type=Path, required=True)
+    pipeline_gc.add_argument("--dry-run", action="store_true")
+    lineage_parser = subparsers.add_parser(
+        "lineage", help="trace source-to-consumption lineage for a pipeline artifact"
+    )
+    lineage_parser.add_argument("artifact_or_id")
+    lineage_parser.add_argument("--state", type=Path)
+    lineage_parser.add_argument("--format", choices=("json", "text"), default="json")
     compare_parser = subparsers.add_parser("compare", help="compare two dataset snapshots")
     compare_parser.add_argument("baseline", type=Path)
     compare_parser.add_argument("candidate", type=Path)
@@ -425,6 +444,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.command == "pipeline":
         return _run_pipeline(args)
+    if args.command == "lineage":
+        return _run_lineage(args)
     return _run_compare(args)
 
 
@@ -445,18 +466,59 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             )
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
             return 0
-        artifact = read_pipeline_artifact(args.artifact, verify=args.verify)
-        if args.format == "markdown":
-            pipeline = artifact.get("pipeline")
-            target = artifact.get("target")
-            if not isinstance(pipeline, dict) or not isinstance(target, dict):
-                raise PipelineError("INVALID_PIPELINE_ARTIFACT", "Pipeline plan shape is invalid")
-            rendered = (
-                f"# DataJig Pipeline `{artifact['pipeline_id']}`\n\n"
-                f"- Name: `{pipeline.get('name')}`\n"
-                f"- Mode: `{target.get('mode')}`\n"
-                f"- Bundle specification: `{artifact['bundle_spec_id']}`\n"
+        if args.pipeline_command == "apply":
+            from datajig.pipeline import apply_pipeline
+
+            if args.config is not None:
+                if args.plan is not None or args.accept_plan is not None or not args.auto_accept:
+                    raise PipelineError(
+                        "INVALID_ARGUMENT",
+                        "Use either PLAN --accept-plan PIPE_ID, or --config FILE --auto-accept",
+                    )
+                config = args.config.expanduser()
+                plan_path = config.parent / ".datajig-pipeline-plan.json"
+                if plan_path.exists():
+                    artifact = read_pipeline_artifact(plan_path, verify=True)
+                else:
+                    artifact = create_pipeline_plan(config, plan_path)
+                accepted = artifact["pipeline_id"]
+            else:
+                if args.plan is None or args.accept_plan is None or args.auto_accept:
+                    raise PipelineError(
+                        "INVALID_ARGUMENT",
+                        "Apply requires PLAN --accept-plan PIPE_ID; "
+                        "--resume does not waive acceptance",
+                    )
+                plan_path = args.plan
+                accepted = args.accept_plan
+            artifact, decision = apply_pipeline(plan_path, str(accepted), resume=args.resume)
+            print(
+                json.dumps(
+                    {**envelope(artifact), "decision": decision},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             )
+            return 0
+        if args.pipeline_command == "gc":
+            from datajig.pipeline import garbage_collect_pipelines
+
+            artifact = garbage_collect_pipelines(args.state, dry_run=args.dry_run)
+            print(
+                json.dumps(
+                    envelope(artifact),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
+        from datajig.pipeline import read_pipeline_document, render_pipeline_markdown
+
+        artifact = read_pipeline_document(args.artifact, verify=args.verify)
+        if args.format == "markdown":
+            rendered = render_pipeline_markdown(artifact)
         else:
             rendered = (
                 json.dumps(
@@ -468,11 +530,53 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             if args.output.exists() or args.output.is_symlink():
                 raise PipelineError("OUTPUT_EXISTS", "Pipeline info destination already exists")
             args.output.write_text(rendered, encoding="utf-8")
+            print(
+                json.dumps(
+                    envelope(
+                        {
+                            "pipeline_id": artifact.get("pipeline_id"),
+                            "format": args.format,
+                            "output": str(args.output.resolve()),
+                            "verified": args.verify,
+                        }
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
         else:
             print(rendered, end="")
         return 0
     except PipelineError as exc:
         _print_pipeline_error(exc)
+        return 2
+    except OSError as exc:
+        _print_pipeline_error(PipelineError("PIPELINE_IO_ERROR", f"Pipeline I/O failed: {exc}"))
+        return 2
+
+
+def _run_lineage(args: argparse.Namespace) -> int:
+    from datajig.pipeline import PipelineError, envelope, pipeline_lineage
+
+    try:
+        artifact = pipeline_lineage(args.artifact_or_id, state=args.state)
+        if args.format == "text":
+            artifact = {
+                **artifact,
+                "text": "source -> transform -> revision -> bundle -> consumption_plan",
+            }
+        print(
+            json.dumps(
+                envelope(artifact), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+        )
+        return 0
+    except PipelineError as exc:
+        _print_pipeline_error(exc)
+        return 2
+    except OSError as exc:
+        _print_pipeline_error(PipelineError("PIPELINE_IO_ERROR", f"Lineage I/O failed: {exc}"))
         return 2
 
 
@@ -547,9 +651,67 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
     except NativeBackendUnavailableError as exc:
         _print_agent_error("NATIVE_BACKEND_UNAVAILABLE", str(exc))
         return 2
-    sys.stdout.buffer.write(completed.stdout.encode("utf-8"))
+    stdout = completed.stdout
+    if completed.returncode == 0 and raw_args and raw_args[0] == "status":
+        stdout = _augment_status_with_pipeline(stdout, raw_args)
+    elif completed.returncode == 0 and raw_args and raw_args[0] == "capabilities":
+        stdout = _augment_capabilities_with_pipeline(stdout)
+    sys.stdout.buffer.write(stdout.encode("utf-8"))
     sys.stderr.buffer.write(completed.stderr.encode("utf-8"))
     return completed.returncode
+
+
+def _augment_capabilities_with_pipeline(serialized: str) -> str:
+    try:
+        payload = json.loads(serialized)
+        if not isinstance(payload, dict):
+            return serialized
+        payload["pipeline_plan_schema_versions"] = [1]
+        payload["pipeline_receipt_schema_versions"] = [1]
+        payload["pipeline_lineage_schema_versions"] = [1]
+        features = payload.get("features")
+        if isinstance(features, dict):
+            features.update(
+                {
+                    "deterministic_pipeline_plans": True,
+                    "recoverable_pipeline": True,
+                    "pipeline_lineage": True,
+                }
+            )
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    except (TypeError, ValueError):
+        return serialized
+
+
+def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> str:
+    from datajig.pipeline import PipelineError, read_pipeline_document
+
+    try:
+        payload = json.loads(serialized)
+        artifact = payload.get("artifact")
+        if not isinstance(payload, dict) or not isinstance(artifact, dict):
+            return serialized
+        state = Path(".datajig")
+        for index, item in enumerate(raw_args[:-1]):
+            if item == "--state":
+                state = Path(raw_args[index + 1])
+                break
+        receipts = list((state.expanduser().resolve() / "pipelines").glob("pipe_*/receipt.json"))
+        if not receipts:
+            artifact["recent_pipeline"] = None
+        else:
+            recent = max(receipts, key=lambda path: path.stat().st_mtime_ns)
+            receipt = read_pipeline_document(recent, verify=True)
+            artifact["recent_pipeline"] = {
+                "pipeline_id": receipt.get("pipeline_id"),
+                "pipeline_receipt_id": receipt.get("pipeline_receipt_id"),
+                "final_revision": receipt.get("final_revision"),
+                "bundle_id": receipt.get("bundle_id"),
+                "status": receipt.get("status"),
+            }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    except (OSError, ValueError, PipelineError):
+        return serialized
 
 
 def _print_agent_error(code: str, message: str) -> None:

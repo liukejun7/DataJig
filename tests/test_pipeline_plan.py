@@ -144,6 +144,21 @@ class PipelinePlanTests(DataJigCliTestCase):
         )
         self.assertEqual(planned["pipeline_id"], result.payload["error"]["expected_id"])
 
+    def test_info_verify_rejects_transform_tampering_behind_bundle_id(self) -> None:
+        config = self._project(self.root / "project")
+        plan_path = config.parent / "plan.json"
+        planned = self.run_cli("pipeline", "plan", "--config", config, "--plan", plan_path).payload[
+            "artifact"
+        ]
+        payload = json.loads(plan_path.read_text(encoding="utf-8"))
+        payload["transform"]["sql"] = "SELECT 'forged' AS id ORDER BY id"
+        plan_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = self.assert_cli_error(
+            "PIPELINE_PLAN_TAMPERED", "pipeline", "info", plan_path, "--verify"
+        )
+        self.assertEqual(planned["bundle_spec_id"], result.payload["error"]["expected_id"])
+
     def test_plan_refuses_unknown_fields_and_existing_destination(self) -> None:
         config = self._project(
             self.root / "project",
@@ -178,3 +193,38 @@ class PipelinePlanTests(DataJigCliTestCase):
             project / "plan.json",
         )
         self.assertIn("regular file", result.payload["error"]["message"])
+
+    def test_transform_params_reject_floating_point_values(self) -> None:
+        project = self.root / "project"
+        config = self._project(project, CONFIG.replace("  params: []", "  params: [1.5]"))
+
+        result = self.assert_cli_error(
+            "INVALID_PIPELINE_CONFIG",
+            "pipeline",
+            "plan",
+            "--config",
+            config,
+            "--plan",
+            project / "plan.json",
+        )
+
+        self.assertIn("string, boolean, integer, or null", result.payload["error"]["message"])
+        self.assertFalse((project / "plan.json").exists())
+
+    def test_target_and_delivery_paths_reject_symlinked_parents(self) -> None:
+        project = self.root / "project"
+        config = self._project(project)
+        external = self.root / "external"
+        external.mkdir()
+        (project / "prepared").symlink_to(external, target_is_directory=True)
+
+        result = self.assert_cli_error(
+            "INVALID_PIPELINE_CONFIG",
+            "pipeline",
+            "plan",
+            "--config",
+            config,
+            "--plan",
+            project / "plan.json",
+        )
+        self.assertIn("symbolic link", result.payload["error"]["message"])

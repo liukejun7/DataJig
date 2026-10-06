@@ -15,8 +15,9 @@ use datajig_core::{
     WorkspaceLock, WorkspaceStore, agent_contract_id, apply_hf_import, apply_jsonl_patch,
     apply_prepare, artifact_schema, artifact_schema_names, begin_changeset, check_changeset,
     check_repository, check_subset_view, check_workspace, command_catalog, command_descriptor,
-    command_names, compact_summary, create_inventory, create_review, create_snapshot,
-    diff_jsonl_records, diff_manifests, draft_jsonl_patch,
+    command_names, compact_summary, compare_and_swap_workspace_head, create_inventory,
+    create_review, create_snapshot, diff_jsonl_records, diff_manifests, draft_jsonl_patch,
+    export_training_bundle_with_view_at_detached_revision,
     export_training_bundle_with_view_at_revision, get_finding,
     initialize_jsonl_workspace_with_receipt, initialize_workspace, inspect_jsonl, inspect_tabular,
     inspect_training_bundle_with_consumer, inspect_training_consumption, inspect_transform,
@@ -24,8 +25,8 @@ use datajig_core::{
     locate_changeset_finding, manifest_diff_page, materialize_revision, plan_changeset,
     plan_hf_import, plan_prepare, plan_training_consumption, plan_transform, plan_workspace,
     preview_jsonl_patch, resolve_optional_changeset_context, revision_log, run_tutorial,
-    seal_changeset, seal_workspace, stage_changeset, status_changeset, status_workspace,
-    undo_jsonl_patch, write_agent_skill,
+    seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset, status_changeset,
+    status_workspace, undo_jsonl_patch, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -127,6 +128,9 @@ enum Command {
         /// Reachable immutable revision to export; defaults to clean live HEAD.
         #[arg(long)]
         revision: Option<String>,
+        /// Internal pipeline authorization for exporting a detached direct child of HEAD.
+        #[arg(long, hide = true, requires = "revision")]
+        allow_detached: bool,
         #[arg(long, default_value = "datajig-v1")]
         seed: String,
         /// Repeatable NAME=WEIGHT split; each WEIGHT is a positive relative integer weight.
@@ -468,6 +472,23 @@ enum Command {
         /// Exact changeset_... ID or alias. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
+        /// Prepare a validated JSONL revision without advancing HEAD.
+        #[arg(long, hide = true)]
+        detached: bool,
+        /// Verified transform receipt to bind into a detached JSONL revision.
+        #[arg(long, hide = true, requires = "detached")]
+        source_receipt: Option<PathBuf>,
+        /// Commit an already prepared direct child revision with compare-and-swap.
+        #[arg(
+            long,
+            hide = true,
+            requires = "expected_head",
+            conflicts_with = "detached"
+        )]
+        commit_revision: Option<String>,
+        /// Exact current HEAD required by --commit-revision.
+        #[arg(long, hide = true, requires = "commit_revision")]
+        expected_head: Option<String>,
     },
     /// Inspect current dataset state without writing review artifacts.
     Status {
@@ -1103,21 +1124,34 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             output,
             view,
             revision,
+            allow_detached,
             seed,
             splits,
             max_shard_records,
             max_shard_bytes,
         } => {
-            let artifact = export_training_bundle_with_view_at_revision(
-                &state,
-                &output,
-                view.as_deref(),
-                revision.as_deref(),
-                seed,
-                &splits,
-                max_shard_records,
-                max_shard_bytes,
-            )
+            let artifact = if allow_detached {
+                export_training_bundle_with_view_at_detached_revision(
+                    &state,
+                    &output,
+                    revision.as_deref().expect("clap requires revision"),
+                    seed,
+                    &splits,
+                    max_shard_records,
+                    max_shard_bytes,
+                )
+            } else {
+                export_training_bundle_with_view_at_revision(
+                    &state,
+                    &output,
+                    view.as_deref(),
+                    revision.as_deref(),
+                    seed,
+                    &splits,
+                    max_shard_records,
+                    max_shard_bytes,
+                )
+            }
             .map_err(training_export_command_error)?;
             println!(
                 "{}",
@@ -1835,7 +1869,33 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             accept_report,
             change,
             changeset,
+            detached,
+            source_receipt,
+            commit_revision,
+            expected_head,
         } => {
+            if let Some(revision_id) = commit_revision {
+                let artifact = compare_and_swap_workspace_head(
+                    &state,
+                    expected_head
+                        .as_deref()
+                        .expect("clap requires expected HEAD"),
+                    &revision_id,
+                )
+                .map_err(|error| (workspace_error_code(&error), 2, error))?;
+                println!(
+                    "{}",
+                    json!({
+                        "agent_api_version": AGENT_API_VERSION,
+                        "backend": "rust",
+                        "kind": "workspace_head_committed",
+                        "decision": "ready",
+                        "next_actions": [],
+                        "artifact": artifact
+                    })
+                );
+                return Ok(());
+            }
             let resolved_binding =
                 resolve_optional_changeset_context(&state, change.as_deref(), changeset.as_deref())
                     .map_err(|error| (workspace_error_code(&error), 2, error))?;
@@ -1843,6 +1903,14 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 .as_ref()
                 .map(|(change, changeset)| (change.as_str(), changeset.as_str()));
             let artifact = match binding {
+                Some((change_id, changeset_id)) if detached => seal_changeset_detached(
+                    &state,
+                    &message,
+                    accept_report.as_deref(),
+                    change_id,
+                    changeset_id,
+                    source_receipt.as_deref(),
+                ),
                 Some((change_id, changeset_id)) => seal_changeset(
                     &state,
                     threads,

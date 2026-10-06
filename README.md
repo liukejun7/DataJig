@@ -39,7 +39,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.7.0` · local-first · Rust-native control plane · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.8.0` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -78,6 +78,54 @@ aggregations:
 ```bash
 python -m pip install 'datajig[duckdb]'
 ```
+
+## One YAML to a training delivery
+
+DataJig 0.8 turns the atomic workflow into one agent-safe transaction. A
+pipeline binds local CSV, Parquet, or JSONL bytes, authorized SQL, the target
+workspace, export settings, and per-split training consumers into one `pipe_...`
+identity:
+
+```yaml
+schema_version: 1
+pipeline: {name: user-agg-train, provider: duckdb}
+target:
+  dataset: prepared/training.jsonl
+  state: workspace/.datajig
+  mode: create
+delivery: {output: deliveries/user-agg-train}
+inputs:
+  - {alias: events, path: data/events.csv, format: csv}
+transform:
+  sql: |
+    SELECT user_id AS id, SUM(CAST(amount AS INTEGER)) AS total
+    FROM events GROUP BY user_id ORDER BY id
+  id_field: id
+  params: []
+export:
+  split: [train=7, val=2, test=1]
+  max_shard_records: 10000
+consumption_plan:
+  - {consumer: huggingface, split: train, run_id: run-2026-10-06}
+```
+
+Plan, review, and authorize the exact effect:
+
+```bash
+datajig pipeline plan --config pipeline.yaml --plan pipeline-plan.json
+datajig pipeline apply pipeline-plan.json --accept-plan pipe_...
+datajig pipeline info deliveries/user-agg-train/pipeline-receipt.json --verify
+datajig lineage pipe_... --state workspace/.datajig --format text
+```
+
+`create` initializes a new keyed-JSONL workspace. `update` prepares a detached
+revision and bundle first, then advances HEAD with compare-and-swap. A commit
+marker makes the delivery visible only after every consumption plan is bound.
+Crashes retain a bounded journal and continue only with explicit `--resume`;
+ordinary reruns never guess. Identical transformed content is a no-op revision
+but still produces the requested bundle, consumer plans, and `piped_...`
+receipt. Use `--config pipeline.yaml --auto-accept` only when intentionally
+skipping separate plan review.
 
 ## One evidence chain, end to end
 

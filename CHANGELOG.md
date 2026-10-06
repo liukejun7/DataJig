@@ -3,6 +3,37 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] - 2026-10-06
+
+### Added
+
+- `pipeline plan/apply/info/gc` for one-config local training-data deliveries
+  over CSV, Parquet, or JSONL inputs and the bounded DuckDB provider.
+- Strict YAML normalization with duplicate-key, tag, anchor, alias, timestamp,
+  unknown-field, non-finite scalar, and symbolic-link rejection.
+- Deterministic relocation-stable `pipe_...` authorization and bundle-spec
+  identities, with deployment-bound `piped_...` success receipts.
+- Durable execution journals, per-plan and per-workspace OS advisory locks,
+  explicit `--resume`, create/update/no-op behavior, and commit-marker delivery
+  visibility.
+- Detached update sealing, historical bundle preparation, and compare-and-swap
+  HEAD commit so a stale pipeline cannot advance a workspace.
+- `lineage` output across source, transform, revision, bundle, and consumption
+  plan, plus recent-pipeline context in `status`.
+
+### Changed
+
+- The recommended path from local raw data to training is now a reviewed
+  Pipeline; all 0.7 atomic commands remain available and compatible.
+- `capabilities` advertises pipeline plan, receipt, and lineage schema version 1.
+
+### Fixed
+
+- Interrupted delivery publication can recover after HEAD CAS, directory
+  rename, or commit-marker publication without silently overwriting output.
+- Pipeline plans now reject both authorization-field tampering and changes
+  hidden behind a forged bundle-spec identity.
+
 ## [0.7.0] - 2026-10-06
 
 ### Added
