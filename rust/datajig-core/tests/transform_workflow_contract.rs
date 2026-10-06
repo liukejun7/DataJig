@@ -3,8 +3,9 @@ use datajig_core::{
     MAX_TRANSFORM_OUTPUT_ROWS, MAX_TRANSFORM_PARAMETER_BYTES, MAX_TRANSFORM_PARAMETERS,
     MAX_TRANSFORM_SOURCE_BYTES, MAX_TRANSFORM_SOURCE_ROWS, MAX_TRANSFORM_SQL_BYTES,
     TRANSFORM_PLAN_SCHEMA_VERSION, TRANSFORM_RECEIPT_SCHEMA_VERSION, TransformExecutionEvidence,
-    TransformExpectedOutput, TransformField, TransformLimits, TransformPlan, TransformPlanInput,
-    TransformProviderIdentity, TransformReceipt, TransformSource, TransformSourceFormat,
+    TransformExpectedOutput, TransformField, TransformLimits, TransformOutputError,
+    TransformOutputErrorKind, TransformPlan, TransformPlanInput, TransformProviderIdentity,
+    TransformReceipt, TransformSource, TransformSourceFormat, verify_transform_candidate,
 };
 use serde_json::json;
 use std::fs;
@@ -165,6 +166,222 @@ fn transform_limits_match_public_contract() {
     assert_eq!(TRANSFORM_RECEIPT_SCHEMA_VERSION, 1);
 }
 
+#[test]
+fn output_verifier_canonicalizes_every_supported_scalar() {
+    let candidate = temporary_path("provider-candidate.jsonl");
+    let canonical = temporary_path("canonical.jsonl");
+    fs::write(
+        &candidate,
+        concat!(
+            "{\"text\":\"é\",\"signed\":-7,\"id\":1.0,\"flag\":true,",
+            "\"nothing\":null,\"unsigned\":18446744073709551615,\"zero\":-0.0}\n"
+        ),
+    )
+    .unwrap();
+    let schema = vec![
+        field("text", "string", false),
+        field("signed", "integer", false),
+        field("id", "double", false),
+        field("flag", "boolean", false),
+        field("nothing", "string", true),
+        field("unsigned", "unsigned_integer", false),
+        field("zero", "double", false),
+    ];
+
+    let verified = verify_transform_candidate(
+        &candidate,
+        &canonical,
+        "id",
+        &schema,
+        &TransformLimits::v1(),
+    )
+    .unwrap();
+    let expected = concat!(
+        "{\"flag\":true,\"id\":1.0,\"nothing\":null,\"signed\":-7,",
+        "\"text\":\"é\",\"unsigned\":18446744073709551615,\"zero\":0}\n"
+    );
+    assert_eq!(expected, fs::read_to_string(&canonical).unwrap());
+    assert_eq!(1, verified.rows);
+    assert_eq!(1, verified.unique_ids);
+    assert_eq!(expected.len() as u64, verified.bytes);
+    assert_eq!(&canonical, verified.canonical_path());
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"datajig-prepared-jsonl-v1\0");
+    hasher.update(expected.as_bytes());
+    assert_eq!(
+        format!("prepared_{}", hasher.finalize().to_hex()),
+        verified.output_content_id
+    );
+    let _ = fs::remove_file(candidate);
+    let _ = fs::remove_file(canonical);
+}
+
+#[test]
+fn output_verifier_rejects_schema_type_and_malformed_rows_without_artifacts() {
+    let cases = [
+        (
+            "duplicate-schema",
+            "{\"id\":1}\n",
+            vec![field("id", "integer", false), field("id", "integer", false)],
+            TransformOutputErrorKind::Schema,
+        ),
+        (
+            "unsafe-schema",
+            "{\"id\":1,\"bad\\u0000field\":\"x\"}\n",
+            vec![
+                field("id", "integer", false),
+                field("bad\0field", "string", false),
+            ],
+            TransformOutputErrorKind::Schema,
+        ),
+        (
+            "unsupported-type",
+            "{\"id\":1,\"price\":\"1.2\"}\n",
+            vec![
+                field("id", "integer", false),
+                field("price", "decimal", false),
+            ],
+            TransformOutputErrorKind::UnsupportedType,
+        ),
+        (
+            "duplicate-member",
+            "{\"id\":1,\"id\":2}\n",
+            vec![field("id", "integer", false)],
+            TransformOutputErrorKind::MalformedRow,
+        ),
+        (
+            "nested",
+            "{\"id\":1,\"value\":[]}\n",
+            vec![
+                field("id", "integer", false),
+                field("value", "string", false),
+            ],
+            TransformOutputErrorKind::MalformedRow,
+        ),
+        (
+            "huge-double",
+            "{\"id\":1,\"value\":1e9999}\n",
+            vec![
+                field("id", "integer", false),
+                field("value", "double", false),
+            ],
+            TransformOutputErrorKind::NonFinite,
+        ),
+    ];
+    for (label, payload, schema, expected_kind) in cases {
+        let candidate = temporary_path(&format!("{label}-candidate.jsonl"));
+        let canonical = temporary_path(&format!("{label}-canonical.jsonl"));
+        fs::write(&candidate, payload).unwrap();
+        let error = verify_transform_candidate(
+            &candidate,
+            &canonical,
+            "id",
+            &schema,
+            &TransformLimits::v1(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            expected_kind,
+            error.downcast_ref::<TransformOutputError>().unwrap().kind()
+        );
+        assert!(!canonical.exists(), "{label} left a canonical artifact");
+        let _ = fs::remove_file(candidate);
+    }
+}
+
+#[test]
+fn output_verifier_enforces_id_integrity_and_stream_limits() {
+    let schema = vec![field("id", "double", false), field("value", "string", true)];
+    for (label, payload) in [
+        ("missing", "{\"value\":\"x\"}\n"),
+        ("null", "{\"id\":null,\"value\":\"x\"}\n"),
+        ("wrong-type", "{\"id\":true,\"value\":\"x\"}\n"),
+        (
+            "duplicate-normalized",
+            "{\"id\":1,\"value\":\"a\"}\n{\"id\":1.0,\"value\":\"b\"}\n",
+        ),
+    ] {
+        assert_output_error(
+            label,
+            payload,
+            &schema,
+            TransformLimits::v1(),
+            TransformOutputErrorKind::IdIntegrity,
+        );
+    }
+    assert_output_error(
+        "empty-string",
+        "{\"id\":\"   \"}\n",
+        &[field("id", "string", false)],
+        TransformLimits::v1(),
+        TransformOutputErrorKind::IdIntegrity,
+    );
+
+    let mut row_limits = TransformLimits::v1();
+    row_limits.output_rows = 1;
+    assert_output_error(
+        "row-limit",
+        "{\"id\":1,\"value\":\"a\"}\n{\"id\":2,\"value\":\"b\"}\n",
+        &schema,
+        row_limits,
+        TransformOutputErrorKind::OutputLimit,
+    );
+
+    let mut byte_limits = TransformLimits::v1();
+    byte_limits.output_bytes = 10;
+    assert_output_error(
+        "byte-limit",
+        "{\"id\":1,\"value\":\"larger than ten bytes\"}\n",
+        &schema,
+        byte_limits,
+        TransformOutputErrorKind::OutputLimit,
+    );
+}
+
+#[test]
+fn output_verifier_accepts_256_fields_and_rejects_the_next() {
+    let mut object = serde_json::Map::new();
+    let mut schema = Vec::new();
+    for index in 0..256 {
+        let name = format!("field_{index:03}");
+        object.insert(name.clone(), json!(index));
+        schema.push(field(&name, "integer", false));
+    }
+    object.insert("field_000".into(), json!(1));
+    let candidate = temporary_path("field-boundary-candidate.jsonl");
+    let canonical = temporary_path("field-boundary-canonical.jsonl");
+    fs::write(
+        &candidate,
+        format!("{}\n", serde_json::to_string(&object).unwrap()),
+    )
+    .unwrap();
+    verify_transform_candidate(
+        &candidate,
+        &canonical,
+        "field_000",
+        &schema,
+        &TransformLimits::v1(),
+    )
+    .unwrap();
+    let _ = fs::remove_file(&canonical);
+
+    schema.push(field("field_256", "integer", false));
+    let error = verify_transform_candidate(
+        &candidate,
+        &canonical,
+        "field_000",
+        &schema,
+        &TransformLimits::v1(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        TransformOutputErrorKind::Schema,
+        error.downcast_ref::<TransformOutputError>().unwrap().kind()
+    );
+    assert!(!canonical.exists());
+    let _ = fs::remove_file(candidate);
+}
+
 fn plan_input() -> TransformPlanInput {
     let schema = vec![
         TransformField::new("id".into(), "utf8".into(), false).unwrap(),
@@ -214,4 +431,28 @@ fn temporary_path(suffix: &str) -> PathBuf {
         "datajig-transform-contract-{}-{nonce}-{suffix}",
         std::process::id()
     ))
+}
+
+fn field(name: &str, value_type: &str, nullable: bool) -> TransformField {
+    TransformField::new(name.into(), value_type.into(), nullable).unwrap()
+}
+
+fn assert_output_error(
+    label: &str,
+    payload: &str,
+    schema: &[TransformField],
+    limits: TransformLimits,
+    kind: TransformOutputErrorKind,
+) {
+    let candidate = temporary_path(&format!("{label}-candidate.jsonl"));
+    let canonical = temporary_path(&format!("{label}-canonical.jsonl"));
+    fs::write(&candidate, payload).unwrap();
+    let error =
+        verify_transform_candidate(&candidate, &canonical, "id", schema, &limits).unwrap_err();
+    assert_eq!(
+        kind,
+        error.downcast_ref::<TransformOutputError>().unwrap().kind()
+    );
+    assert!(!canonical.exists(), "{label} left a canonical artifact");
+    let _ = fs::remove_file(candidate);
 }

@@ -31,6 +31,7 @@ mod tabular_source;
 mod training_bundle;
 mod training_consumption;
 mod transform;
+mod transform_output;
 mod transform_provider;
 mod transform_sql;
 mod tutorial;
@@ -168,6 +169,10 @@ pub use transform::{
     TransformExecutionEvidence, TransformExpectedOutput, TransformField, TransformLimits,
     TransformPlan, TransformPlanInput, TransformProviderIdentity, TransformReceipt,
     TransformSource, TransformSourceFormat,
+};
+pub use transform_output::{
+    ProviderObservedSchema, TransformOutputError, TransformOutputErrorKind,
+    VerifiedTransformOutput, verify_transform_candidate,
 };
 pub use transform_provider::{
     ProviderExecutionSummary, ProviderRequest, StagedTransformSource, TransformInputSpec,
