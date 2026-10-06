@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_8680432a1b97a0ae2ba78c8cb3c0ec9fefc39fd2feb57ed8038108d41b69bb62", identities[0],
+        "contract_52c9fd99803b8e52b62d94f1c81d608b77497ac0bc7fd157b510655ec6978917", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }
@@ -171,14 +171,33 @@ fn discovery_publishes_the_hugging_face_import_contract() {
 
 #[test]
 fn discovery_connects_import_receipts_to_multi_shard_preparation() {
+    let capabilities = run_json(&["capabilities"]);
     let prepare = run_json(&["describe", "prepare-plan"]);
     let description = prepare["command"]["summary"].as_str().unwrap();
     let usage = prepare["command"]["usage"].as_str().unwrap();
 
     assert!(description.contains("import receipt"));
+    assert!(description.contains("recursive same-format directory"));
     assert!(description.contains("JSONL"));
     assert!(usage.contains("datajig.hf-import.json"));
     assert!(render_agent_skill().contains("datajig.hf-import.json"));
+    assert!(render_agent_skill().contains("recursive local directory"));
+    assert_eq!(
+        json!(["csv", "parquet", "jsonl"]),
+        capabilities["prepare_source_formats"]
+    );
+    assert_eq!(
+        json!(["file", "directory", "hugging_face_import_receipt"]),
+        capabilities["prepare_source_kinds"]
+    );
+    assert_eq!(
+        json!(10_000),
+        capabilities["limits"]["max_local_prepare_source_files"]
+    );
+    assert_eq!(
+        json!(8_589_934_592_u64),
+        capabilities["limits"]["max_local_prepare_source_bytes"]
+    );
 }
 
 #[test]
@@ -189,7 +208,7 @@ fn discovery_publishes_the_bounded_transform_contract() {
     let info = run_json(&["describe", "transform-info"]);
 
     assert_eq!(true, capabilities["features"]["agent_native_transforms"]);
-    assert_eq!(json!([1]), capabilities["transform_plan_schema_versions"]);
+    assert_eq!(json!([2]), capabilities["transform_plan_schema_versions"]);
     assert_eq!(
         json!([1]),
         capabilities["transform_receipt_schema_versions"]
@@ -221,6 +240,32 @@ fn discovery_publishes_the_bounded_transform_contract() {
     let skill = render_agent_skill();
     assert!(skill.contains("transform-plan"));
     assert!(skill.contains("transform-receipt"));
+}
+
+#[test]
+fn command_descriptors_publish_machine_readable_prerequisites() {
+    let export = run_json(&["describe", "export"]);
+    assert_eq!(
+        json!(["workspace:clean", "revision:sealed"]),
+        export["command"]["requires"]
+    );
+
+    let transform_plan = run_json(&["describe", "transform-plan"]);
+    assert_eq!(
+        json!(["dependency:duckdb", "inputs:declared-local-tables"]),
+        transform_plan["command"]["requires"]
+    );
+
+    let transform_apply = run_json(&["describe", "transform-apply"]);
+    assert_eq!(
+        json!([
+            "dependency:duckdb",
+            "artifact:transform-plan",
+            "authorization:accepted-plan",
+            "inputs:unchanged"
+        ]),
+        transform_apply["command"]["requires"]
+    );
 }
 
 #[test]
@@ -260,22 +305,22 @@ fn export_help_and_capabilities_explain_the_split_contract_up_front() {
     let help = String::from_utf8(help.stdout).unwrap();
     let lower_help = help.to_lowercase();
     assert!(help.contains("NAME=WEIGHT"));
-    assert!(help.contains("10000"));
-    assert!(help.contains("--split train=7000 --split val=2000 --split test=1000"));
+    assert!(lower_help.contains("relative integer"));
+    assert!(help.contains("--split train=7 --split val=2 --split test=1"));
     assert!(lower_help.contains("soft byte target"));
     assert!(lower_help.contains("final shards may contain fewer records"));
 
     let capabilities = run_json(&["capabilities"]);
     assert_eq!(
         json!(10_000),
-        capabilities["argument_contracts"]["training_split"]["weight_total"]
+        capabilities["argument_contracts"]["training_split"]["normalized_weight_total"]
     );
     assert_eq!(
         json!("NAME=WEIGHT"),
         capabilities["argument_contracts"]["training_split"]["syntax"]
     );
     assert_eq!(
-        json!(["train=7000", "val=2000", "test=1000"]),
+        json!(["train=7", "val=2", "test=1"]),
         capabilities["argument_contracts"]["training_split"]["example"]
     );
     assert_eq!(
@@ -313,12 +358,7 @@ fn invalid_split_errors_include_a_machine_executable_remediation() {
     assert_eq!(json!("export"), document["next_actions"][0]["command"]);
     assert_eq!(
         json!([
-            "--split",
-            "train=7000",
-            "--split",
-            "val=2000",
-            "--split",
-            "test=1000"
+            "--split", "train=7", "--split", "val=2", "--split", "test=1"
         ]),
         document["next_actions"][0]["args"]
     );
@@ -363,7 +403,7 @@ fn check_help_and_descriptor_publish_context_aliases() {
         capabilities["argument_contracts"]["changeset_selectors"]["omission"]
     );
 
-    for command_name in ["plan", "seal", "status"] {
+    for command_name in ["review-plan", "seal", "status"] {
         let descriptor = run_json(&["describe", command_name]);
         let inputs = descriptor["command"]["inputs"].as_array().unwrap();
         for selector in ["change", "changeset"] {

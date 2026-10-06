@@ -10,5 +10,11 @@ dist/
 /.datajig/
 /.benchmarks/
 /.superpowers/
+/doc/
 /docs/
+/artifacts/
+/.codex/
+/.datajig-*/
+/.coverage
+/htmlcov/
 /uv.lock

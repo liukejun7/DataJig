@@ -1,9 +1,9 @@
-# DataJig
+<h1 align="center">DataJig</h1>
 
 [English](README.md) · [架构](ARCHITECTURE.md) · [路线图](ROADMAP.md) · [贡献指南](CONTRIBUTING.md) · [安全策略](SECURITY.md) · [更新日志](CHANGELOG.md)
 
 <p align="center">
-  <img src="assets/datajig-hero.png" alt="DataJig 将数据集修改对齐为可验证 revision" width="100%">
+  <img src="./assets/datajig-hero.png" alt="DataJig 将原始数据加工为已验证训练数据的友好流水线" width="100%">
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@ raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → �
 如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
 会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.6.1` · 本地优先 · Rust 原生控制平面 · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.7.0` · 本地优先 · Rust 原生控制平面 · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## DataJig 在技术栈中的位置
 
@@ -97,7 +97,9 @@ datajig inspect data/papers.parquet --id-field paper_id
 
 `inspect` 会报告 schema、行数、缺失值计数、稳定源身份和 ID 健康度，但不会打印
 cell value 或原始 ID。CSV 和 flat Parquet 会先被确定性处理成 keyed JSONL，再进入
-事务化变更控制。XLSX 与数据库、Hive、Spark 直连 adapter 尚未实现。
+事务化变更控制。递归本地数据集（包括 Hive 风格分区目录）可作为确定性的同格式
+shard 集合处理，但目录分区值不会自动物化为列。XLSX 与数据库、Spark table 直连
+adapter 尚未实现。
 
 无需创建 workspace，也能比较两个 keyed JSONL revision：
 
@@ -162,8 +164,8 @@ datajig init data/demo1.jsonl --id-field id
 
 ## 准备表格数据
 
-用一份有序 recipe，把单个 CSV、flat Parquet、JSONL，或 verified import receipt 中
-按路径排序的同格式 shards，转换成确定、带稳定主键的 JSONL：
+用一份有序 recipe，把单个 CSV、flat Parquet、JSONL，递归本地目录，或 verified
+import receipt 中按路径排序的同格式 shards，转换成确定、带稳定主键的 JSONL：
 
 ```json
 {
@@ -215,7 +217,11 @@ datajig prepare-apply artifacts/papers.prepare.plan.json \
   --accept-plan prep_...
 ```
 
-Plan 会绑定源文件 bytes 或 `hfimport_...` receipt、选中 shard 的路径与 bytes、recipe、
+对递归本地数据集，可把 source 指向目录，并在 recipe 中使用
+`"include": ["year=*/month=*/*.parquet"]` 与 `"ignore": ["**/_temporary/**"]`
+这样的有界选择器。成员或内容改变都会让 apply 失效。
+
+Plan 会绑定源文件 bytes、`source_set_...` 或 `hfimport_...` receipt、选中 shard 的路径与 bytes、recipe、
 规范路径、输出行数和预测 JSONL 哈希。所有 shards 共享全局行数、去重与 ID 状态。Apply
 重新执行 recipe，只有全部身份仍一致时才发布。数据与 provenance receipt 使用
 可从崩溃恢复的事务语义、不覆盖已有文件，并且可以安全重试。Recipe v1 支持有序的
@@ -240,7 +246,7 @@ ORDER BY paper_id
 ```bash
 datajig transform-plan \
   --input papers=data/papers.csv \
-  --sql transforms/high-score.sql \
+  --sql-file transforms/high-score.sql \
   --params transforms/params.json \
   --id-field paper_id \
   --output data/high-score.jsonl \
@@ -305,7 +311,7 @@ Workspace 工作流命令会返回带 `decision` 和完整参数的 `next_action
 业务值，也不会静默应用 patch：
 
 ```bash
-datajig plan
+datajig review-plan
 datajig findings .datajig/latest.review.json --offset 0 --limit 50
 
 datajig seal \
@@ -412,16 +418,16 @@ apply 与 undo 可安全重试，也能恢复中断事务。workspace lock 协�
 datajig export \
   --output artifacts/papers-v1 \
   --seed research-42 \
-  --split train=9000 \
-  --split validation=1000
+  --split train=9 \
+  --split validation=1
 
 datajig export-info artifacts/papers-v1/datajig.bundle.json --verify
 ```
 
-Split 权重使用整数万分比：重复传入 `--split NAME=WEIGHT`，每个权重必须为正，
-且总和必须恰好等于 `10000`。`export --help` 和 `capabilities` 都会直接暴露这一
-契约与完整示例。参数不合法时会返回结构化修复建议和可执行的 `next_actions`，
-Agent 不需要靠反复试错推断语法。
+Split 权重使用正的相对整数：重复传入 `--split NAME=WEIGHT`，DataJig 会把整组
+权重确定性归一化为 10,000 个分配单位。`export --help` 和 `capabilities` 都会直接
+暴露这一契约与完整示例。参数不合法时会返回结构化修复建议和可执行的
+`next_actions`，Agent 不需要靠反复试错推断语法。
 
 `--max-shard-records` 可从 `1` 开始设置，最后一个 shard 可以少于目标记录数。
 `--max-shard-bytes` 是从 `1` byte 开始的软目标：若一条合法记录本身超过目标，它会
@@ -436,8 +442,8 @@ datajig export \
   --state .datajig \
   --revision rev_... \
   --output artifacts/papers-rev \
-  --split train=9000 \
-  --split validation=1000
+  --split train=9 \
+  --split validation=1
 ```
 
 DataJig 会先验证不可变历史内容，再执行 view 和生成 shard；绝不会拿当前工作
@@ -467,8 +473,8 @@ datajig view-check --recipe recipes/published.json
 datajig export \
   --view recipes/published.json \
   --output artifacts/published-v1 \
-  --split train=9000 \
-  --split validation=1000
+  --split train=9 \
+  --split validation=1
 ```
 
 ## 在训练中读取验证过的记录
@@ -580,6 +586,7 @@ datajig agent-skill --output .agents/skills/datajig/SKILL.md
 | 锁定 revision 的 Hugging Face dataset repository 导入 | Linux、macOS 已支持 |
 | Keyed JSONL inspect 与 record diff | 已支持 |
 | 隐私安全的 CSV/Parquet inspect 与 recipe scaffold | 已支持 |
+| 带成员身份的递归 CSV/Parquet/JSONL 数据集处理 | Linux、macOS 已支持 |
 | 带 plan/apply provenance 的确定性 CSV/flat Parquet 清洗 | Linux、macOS 已支持 |
 | 任务级 JSONL workspace 与质量策略 | Linux、macOS 已支持 |
 | 证据绑定的 JSONL patch 草拟、预览、原子应用与精确撤销 | Linux、macOS 已支持 |
@@ -639,7 +646,7 @@ datajig capabilities
 DataJig 将成为 Agent 与数据之间的默认控制层：
 
 1. Arrow batch 执行、join、全数据集数值变换与多记录 patch set；
-2. XLSX 与数据库快照 adapter，随后接入 Spark/Hive manifest；
+2. XLSX 与数据库快照 adapter，随后接入远程 Spark/Hive catalog manifest；
 3. 对接 S3/GCS/Azure、Oxen、DVC 与更多数据集 Hub 的 revision adapter；
 4. Windows 原生文件系统语义与 wheel。
 

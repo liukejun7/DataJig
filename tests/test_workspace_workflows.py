@@ -7,6 +7,15 @@ from tests.cli_harness import DataJigCliTestCase
 
 
 class WorkspaceWorkflowTests(DataJigCliTestCase):
+    def test_status_identifies_the_tracked_dataset_and_adapter(self) -> None:
+        dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
+
+        status = self.status()
+
+        self.assertEqual("jsonl", status["adapter"])
+        self.assertEqual(str(dataset.resolve()), status["dataset_path"])
+        self.assertEqual(str(self.state.resolve()), status["state_dir"])
+
     def test_unique_active_changeset_aliases_avoid_copying_content_ids(self) -> None:
         dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
         change_id, _ = self.begin_change("alias-resolution")
@@ -66,7 +75,7 @@ class WorkspaceWorkflowTests(DataJigCliTestCase):
             status_result["next_actions"][0]["args"],
         )
 
-        planned = self.run_cli("plan", "--state", self.state).payload
+        planned = self.run_cli("review-plan", "--state", self.state).payload
         self.assertEqual(review["report_content_id"], planned["artifact"]["report_content_id"])
         self.assertEqual(
             [
@@ -141,7 +150,7 @@ class WorkspaceWorkflowTests(DataJigCliTestCase):
         checked = self.run_cli("check", "--state", self.state).payload
 
         self.assertEqual(
-            ["plan", "findings"],
+            ["review-plan", "findings"],
             [action["command"] for action in checked["next_actions"]],
         )
         self.assertEqual(

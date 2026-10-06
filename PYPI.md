@@ -1,6 +1,7 @@
 # DataJig
 
-**The agent-native data control plane for reproducible model training.**
+**DataJig is an agent-native data control plane that turns raw datasets into
+verified, versioned, training-ready inputs.**
 
 DataJig gives AI agents a safe, auditable path from raw data to model training.
 It wraps data work in explicit plans, deterministic identities, semantic checks,
@@ -13,7 +14,8 @@ raw source -> pin -> prepare/transform -> review -> seal -> export -> train
 ```
 
 DataJig is local-first and ships as a Python wheel containing its Rust core. It
-supports CSV, flat Parquet, keyed JSONL, and ImageFolder workflows.
+supports single files and deterministic recursive datasets in CSV, flat
+Parquet, or keyed JSONL, plus ImageFolder workflows.
 
 ## Install
 

@@ -14,6 +14,7 @@ from datajig.native import (
     TransformProviderUnavailableError,
     run_native,
 )
+from tests.cli_harness import DataJigCliTestCase
 
 
 class TransformCliBindingTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class TransformCliBindingTests(unittest.TestCase):
                 "identity_namespace": "datajig-v1",
                 "tool": {"name": "datajig"},
                 "commands": ["capabilities", "describe", *sorted(NATIVE_TRANSFORM_COMMANDS)],
-                "transform_plan_schema_versions": [1],
+                "transform_plan_schema_versions": [2],
                 "transform_receipt_schema_versions": [1],
                 "transform_provider_protocol_versions": [1],
                 "transform_source_formats": ["csv", "parquet", "jsonl"],
@@ -88,6 +89,47 @@ class TransformCliBindingTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode)
         verify_provider.assert_not_called()
+
+
+class TransformCliWorkflowTests(DataJigCliTestCase):
+    def test_sql_file_is_embedded_in_the_plan_and_not_a_live_apply_dependency(self) -> None:
+        source = self.root / "events.csv"
+        source.write_text("id,value\na,1\nb,2\n", encoding="utf-8")
+        sql_file = self.root / "query.sql"
+        sql = "SELECT id, CAST(value AS BIGINT) AS value FROM events ORDER BY id"
+        sql_file.write_text(sql, encoding="utf-8")
+        output = self.root / "prepared.jsonl"
+        plan = self.root / "transform-plan.json"
+
+        planned = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql-file",
+            sql_file,
+            "--id-field",
+            "id",
+            "--output",
+            output,
+            "--plan",
+            plan,
+        ).payload["artifact"]
+        plan_document = json.loads(plan.read_text(encoding="utf-8"))
+        self.assertEqual(2, plan_document["schema_version"])
+        self.assertEqual(sql, plan_document["sql"])
+        self.assertNotIn("sql_path", plan_document)
+
+        sql_file.unlink()
+        applied = self.run_cli(
+            "transform-apply", plan, "--accept-plan", planned["plan_id"]
+        ).payload["artifact"]
+
+        self.assertFalse(applied["recovered"])
+        self.assertFalse(applied["already_applied"])
+        self.assertEqual(
+            [{"id": "a", "value": 1}, {"id": "b", "value": 2}],
+            [json.loads(line) for line in output.read_text().splitlines()],
+        )
 
 
 if __name__ == "__main__":

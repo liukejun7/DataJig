@@ -8,7 +8,8 @@ without weakening review, reproducibility, or recovery.
 
 - privacy-safe inspection for keyed JSONL, CSV, and flat Parquet;
 - deterministic CSV/Parquet/JSONL-to-JSONL preparation with plan/apply receipts,
-  including ordered multi-file inputs bound to verified Hugging Face imports;
+  including recursive local datasets and ordered multi-file inputs bound to
+  verified Hugging Face imports;
 - revision-pinned Hugging Face dataset-repository imports with exact file-set,
   size, and local content verification;
 - task-scoped JSONL workspaces, quality policies, record-level diffs, guarded

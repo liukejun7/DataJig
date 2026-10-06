@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub const AGENT_API_VERSION: u8 = 1;
 pub const AGENT_SKILL_SCHEMA_VERSION: u8 = 1;
-pub const COMMAND_SCHEMA_VERSION: u8 = 1;
+pub const COMMAND_SCHEMA_VERSION: u8 = 2;
 const MAX_AGENT_SKILL_BYTES: usize = 64 * 1024;
 
 pub fn agent_contract_id() -> String {
@@ -34,6 +34,7 @@ pub struct CommandDescriptor {
     pub name: &'static str,
     summary: &'static str,
     usage: &'static str,
+    requires: Vec<&'static str>,
     read_only: bool,
     effects: Vec<&'static str>,
     platforms: Vec<&'static str>,
@@ -82,7 +83,7 @@ pub struct AgentSkillArtifact {
 }
 
 pub fn command_catalog() -> Vec<CommandDescriptor> {
-    let commands = vec![
+    let mut commands = vec![
         command(
             "agent-skill",
             "Generate a version-matched Agent Skill for the installed CLI.",
@@ -440,7 +441,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
                     true,
                     true,
                     None,
-                    "Deterministic split weight; all weights must total exactly 10000.",
+                    "Positive relative split weight; DataJig deterministically normalizes all weights to 10000 allocation units.",
                 ),
                 input(
                     "revision",
@@ -1337,9 +1338,9 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
             ],
         ),
         command(
-            "plan",
+            "review-plan",
             "Turn the latest workspace review into a deterministic Agent action plan.",
-            "datajig plan [--state <DIR>] [--change <chg_ID> --changeset <changeset_ID>]",
+            "datajig review-plan [--state <DIR>] [--change <chg_ID> --changeset <changeset_ID>]",
             writes(
                 vec![
                     "read_dataset",
@@ -1422,7 +1423,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         ),
         command(
             "prepare-plan",
-            "Preview deterministic CSV, flat Parquet, or JSONL preparation from one file or verified import receipt and bind its predicted keyed JSONL output.",
+            "Preview deterministic CSV, flat Parquet, or JSONL preparation from one file, a recursive same-format directory, or a verified import receipt and bind its predicted keyed JSONL output.",
             "datajig prepare-plan <SOURCE|datajig.hf-import.json> --recipe <RECIPE> --output <DATASET.jsonl> --plan <PLAN.json>",
             writes(
                 vec!["read_dataset", "read_prepare_recipe", "write_prepare_plan"],
@@ -1435,7 +1436,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
                     true,
                     false,
                     None,
-                    "Headered UTF-8 CSV, flat Parquet, JSONL, or verified datajig.hf-import.json source.",
+                    "Headered UTF-8 CSV, flat Parquet, JSONL, a recursive same-format directory, or verified datajig.hf-import.json source.",
                 ),
                 input(
                     "recipe",
@@ -2020,6 +2021,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
             ],
         ),
     ];
+    commands.sort_unstable_by_key(|command| command.name);
     debug_assert!(commands.windows(2).all(|pair| pair[0].name < pair[1].name));
     commands
 }
@@ -2054,7 +2056,7 @@ pub fn render_agent_skill() -> String {
 - Run `datajig artifact-schema [jsonl-field-patch|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]` instead of guessing an input artifact shape.\n\
 - Use `repository-install` to publish one version-matched Skill, CI workflow, hook, and content-addressed lock; use `repository-check` before agent work and in CI to reject drift or dirty bound workspaces.\n\
 - Start every local table with `datajig inspect`: JSONL returns workspace readiness; CSV and flat Parquet return a privacy-safe profile and inline preparation recipe template.\n\
-- For CSV, flat Parquet, or JSONL data preparation, pass either one file or a verified `datajig.hf-import.json`; use recipe `include`/`ignore` globs for imported shards, compose ordered transformations, inspect the bounded `prepare-plan`, then pass the exact returned `prep_...` identity to `prepare-apply`.\n\
+- For CSV, flat Parquet, or JSONL data preparation, pass one file, a recursive local directory, or a verified `datajig.hf-import.json`; use recipe `include`/`ignore` globs for local or imported shards, compose ordered transformations, inspect the bounded `prepare-plan`, then pass the exact returned `prep_...` identity to `prepare-apply`.\n\
 - For relational transforms, use explicit `ALIAS=PATH` inputs and one AST-whitelisted SELECT; inspect `transform-plan`, authorize its exact `xform_...` identity with `transform-apply`, then retain the `transform-receipt` for revision lineage. Install the optional provider with `pip install 'datajig[duckdb]'`.\n\
 - For Hugging Face dataset repositories, run `hf-import-plan`, inspect the resolved 40-character commit and selected paths, then pass the exact returned `hfplan_...` identity to `hf-import-apply`; never substitute a moving branch during apply.\n\
 - Always parse successful stdout as JSON; commands with `write_artifact` effects also write the requested file.\n\
@@ -2143,12 +2145,95 @@ fn command(
         name,
         summary,
         usage,
+        requires: command_prerequisites(name).to_vec(),
         read_only: access.read_only,
         effects: access.effects,
         platforms: access.platforms,
         inputs,
         output,
         exit_codes,
+    }
+}
+
+fn command_prerequisites(name: &str) -> &'static [&'static str] {
+    match name {
+        "agent-skill" => &["runtime:datajig"],
+        "artifact-schema" | "capabilities" | "describe" => &[],
+        "changeset-begin" => &["workspace:initialized", "workspace:clean"],
+        "changeset-stage" => &["workspace:initialized", "change:active"],
+        "check" => &[
+            "workspace:initialized",
+            "change:active",
+            "changeset:staged",
+            "inputs:unchanged",
+        ],
+        "consume-info" => &["artifact:training-consumption-plan-or-receipt"],
+        "consume-plan" => &["artifact:verified-training-bundle", "adapter:declared"],
+        "explain" | "finding" | "findings" => &["artifact:review-report"],
+        "export" => &["workspace:clean", "revision:sealed"],
+        "export-info" => &["artifact:training-bundle-manifest"],
+        "hf-import-apply" => &[
+            "network:hugging-face",
+            "artifact:hf-import-plan",
+            "authorization:accepted-plan",
+        ],
+        "hf-import-plan" => &["network:hugging-face", "repository:hugging-face-dataset"],
+        "init" => &["dataset:local"],
+        "inspect" => &["dataset:local"],
+        "inventory" => &["dataset:local-directory"],
+        "locate" => &[
+            "workspace:initialized",
+            "changeset:staged",
+            "artifact:review-report",
+        ],
+        "log" => &["workspace:initialized"],
+        "materialize" => &["workspace:initialized", "revision:reachable"],
+        "patch-apply" => &[
+            "artifact:jsonl-patch-preview",
+            "authorization:accepted-patch",
+            "inputs:unchanged",
+        ],
+        "patch-draft" => &["changeset:staged", "artifact:review-report"],
+        "patch-preview" => &["changeset:staged", "artifact:jsonl-field-patch"],
+        "patch-undo" => &["artifact:patch-transaction", "authorization:undo-handle"],
+        "prepare-apply" => &[
+            "artifact:prepare-plan",
+            "authorization:accepted-plan",
+            "inputs:unchanged",
+        ],
+        "prepare-plan" => &[
+            "dataset:local-or-verified-import",
+            "artifact:prepare-recipe",
+        ],
+        "record-diff" => &["dataset:two-keyed-jsonl-files"],
+        "repository-check" => &["repository:installed-datajig-contract"],
+        "repository-install" => &["repository:git-worktree"],
+        "review" => &["artifact:baseline-and-candidate-inventories"],
+        "review-plan" => &["workspace:initialized", "artifact:fresh-review-report"],
+        "seal" => &[
+            "workspace:initialized",
+            "artifact:fresh-passing-review",
+            "inputs:unchanged",
+        ],
+        "snapshot" => &["dataset:local-directory"],
+        "snapshot-diff" => &["artifact:two-snapshot-manifests"],
+        "snapshot-info" => &["artifact:snapshot-manifest"],
+        "status" => &["workspace:initialized"],
+        "transform-apply" => &[
+            "dependency:duckdb",
+            "artifact:transform-plan",
+            "authorization:accepted-plan",
+            "inputs:unchanged",
+        ],
+        "transform-info" => &["artifact:transform-plan-or-receipt"],
+        "transform-plan" => &["dependency:duckdb", "inputs:declared-local-tables"],
+        "tutorial" => &["output:path-must-not-exist"],
+        "view-check" => &[
+            "workspace:clean",
+            "revision:sealed",
+            "artifact:subset-recipe",
+        ],
+        _ => &[],
     }
 }
 

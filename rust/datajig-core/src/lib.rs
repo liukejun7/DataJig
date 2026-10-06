@@ -109,6 +109,7 @@ pub use prepare::{
     PrepareNotAuthorizedError, PreparePlanArtifact, StalePrepareInputError, apply_prepare,
     plan_prepare,
 };
+pub use prepare_source::{MAX_LOCAL_PREPARE_SOURCE_BYTES, MAX_LOCAL_PREPARE_SOURCE_FILES};
 #[cfg(unix)]
 use rayon::prelude::*;
 pub use remediation::{

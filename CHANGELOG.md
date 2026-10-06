@@ -3,6 +3,40 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-10-06
+
+### Added
+
+- Recursive local CSV, flat Parquet, and JSONL dataset preparation with bounded
+  include/ignore selectors, canonical shard ordering, a deterministic
+  `source_set_...` identity, and membership-drift rejection at apply time.
+- Machine-readable `requires` prerequisites in every command descriptor.
+- Workspace status now identifies the tracked dataset path and adapter.
+
+### Changed
+
+- Training split weights are positive relative integers such as `7/2/1`; the
+  core deterministically normalizes them to 10,000 allocation units.
+- `transform-plan --sql` now means inline SQL. File input uses the explicit
+  `--sql-file` option, and immutable schema-2 plans bind SQL content without a
+  live SQL-file dependency during apply.
+- The remediation command is now named `review-plan`, avoiding ambiguity with
+  preparation, import, transform, and consumption plans.
+- Top-level help presents the complete lifecycle, while split and transform
+  help expose their non-obvious argument contracts before execution.
+- The project description and repository header now use the concise
+  agent-native data-control-plane positioning; platform metadata no longer
+  claims unsupported native Windows behavior.
+
+### Fixed
+
+- Status output no longer forces agents to rediscover which dataset a state
+  directory controls.
+- SQL file paths are no longer part of transform identity or a source of false
+  apply-time drift after their contents have been authorized.
+- Relative training splits no longer require callers to manually encode basis
+  points summing to exactly 10,000.
+
 ## [0.6.1] - 2026-10-06
 
 ### Added

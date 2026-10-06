@@ -14,8 +14,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -63,7 +62,7 @@ impl Error for TransformProviderUnavailableError {}
 #[derive(Clone, Debug)]
 pub struct TransformPlanRequest {
     pub inputs: Vec<TransformInputSpec>,
-    pub sql_path: PathBuf,
+    pub sql: String,
     pub parameters: Vec<Value>,
     pub id_field: String,
     pub output_path: PathBuf,
@@ -141,7 +140,7 @@ pub fn plan_transform(request: TransformPlanRequest) -> Result<TransformPlanArti
         )
         .into());
     }
-    let (sql_path, sql) = read_sql(&request.sql_path, &limits)?;
+    let sql = request.sql;
     let sandbox = Sandbox::create(parent_of(&plan_path)?)?;
     let run = run_transform(
         &request.inputs,
@@ -155,7 +154,6 @@ pub fn plan_transform(request: TransformPlanRequest) -> Result<TransformPlanArti
     let expected = expected_output(&run.verified);
     let plan = TransformPlan::create(TransformPlanInput {
         sources: descriptors(&run.staged),
-        sql_path: path_text(&sql_path, "transform SQL")?,
         sql,
         parameters: request.parameters,
         id_field: request.id_field,
@@ -236,14 +234,10 @@ pub fn apply_transform_with_optional_provider(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    let (sql_path, sql) = read_sql(Path::new(plan.sql_path()), plan.limits())?;
-    if path_text(&sql_path, "transform SQL")? != plan.sql_path() || sql != plan.sql() {
-        return Err(TransformDriftError::new("transform SQL changed after planning").into());
-    }
     let sandbox = Sandbox::create(parent_of(&output)?)?;
     let run = run_transform(
         &inputs,
-        &sql,
+        plan.sql(),
         plan.parameters(),
         plan.id_field(),
         python,
@@ -550,36 +544,6 @@ fn correlation_id(sql: &str, sources: &[StagedTransformSource]) -> String {
         b"datajig-transform-correlation-v1\0",
         &payload,
     )
-}
-
-fn read_sql(path: &Path, limits: &TransformLimits) -> Result<(PathBuf, String)> {
-    let canonical = path
-        .canonicalize()
-        .context("cannot resolve transform SQL")?;
-    #[cfg(unix)]
-    let mut file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(path)
-            .context("cannot open transform SQL without following links")?
-    };
-    #[cfg(not(unix))]
-    let mut file = File::open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(InvalidArgumentError::new("transform SQL must be a regular file").into());
-    }
-    let mut payload = Vec::new();
-    file.by_ref()
-        .take(limits.sql_bytes as u64 + 1)
-        .read_to_end(&mut payload)?;
-    if payload.is_empty() || payload.len() > limits.sql_bytes {
-        return Err(InvalidArgumentError::new("transform SQL size is invalid").into());
-    }
-    let sql = String::from_utf8(payload)
-        .map_err(|_| InvalidArgumentError::new("transform SQL must be valid UTF-8"))?;
-    Ok((canonical, sql))
 }
 
 fn resolve_new_path(path: &Path, label: &str) -> Result<PathBuf> {

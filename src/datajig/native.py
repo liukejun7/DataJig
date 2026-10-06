@@ -34,7 +34,7 @@ NATIVE_WORKSPACE_COMMANDS = frozenset(
         "patch-undo",
         "log",
         "materialize",
-        "plan",
+        "review-plan",
         "seal",
         "status",
         "tutorial",
@@ -487,7 +487,7 @@ def _verify_native(
             )
         )
         or (
-            command in {"plan", "capabilities"}
+            command in {"review-plan", "capabilities"}
             and (
                 not isinstance(remediation_plan_schema_versions, list)
                 or not any(
@@ -529,7 +529,7 @@ def _verify_native(
             command in NATIVE_TRANSFORM_COMMANDS | {"capabilities"}
             and (
                 not isinstance(transform_plan_schema_versions, list)
-                or 1 not in transform_plan_schema_versions
+                or 2 not in transform_plan_schema_versions
                 or not isinstance(transform_receipt_schema_versions, list)
                 or 1 not in transform_receipt_schema_versions
                 or not isinstance(transform_provider_protocol_versions, list)

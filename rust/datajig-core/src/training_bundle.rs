@@ -33,19 +33,19 @@ const TRAINING_SPLIT_WEIGHT_TOTAL: u32 = 10_000;
 
 fn invalid_training_split(message: impl AsRef<str>) -> InvalidArgumentError {
     InvalidArgumentError::new(format!(
-        "{}; use NAME=WEIGHT with positive basis-point integers totaling 10000, for example --split train=7000 --split val=2000 --split test=1000",
+        "{}; use NAME=WEIGHT with positive relative integers, for example --split train=7 --split val=2 --split test=1",
         message.as_ref()
     ))
     .with_remediation(
-        "Provide deterministic split weights totaling exactly 10000.",
+        "Provide deterministic positive relative split weights.",
         "export",
         vec![
             "--split".into(),
-            "train=7000".into(),
+            "train=7".into(),
             "--split".into(),
-            "val=2000".into(),
+            "val=2".into(),
             "--split".into(),
-            "test=1000".into(),
+            "test=1".into(),
         ],
     )
 }
@@ -113,7 +113,7 @@ impl TrainingExportConfig {
         }
         let mut splits = Vec::with_capacity(split_specs.len());
         let mut names = BTreeSet::new();
-        let mut total = 0u32;
+        let mut total = 0u64;
         for spec in split_specs {
             let (name, weight) = spec.split_once('=').ok_or_else(|| {
                 invalid_training_split("split must use the form safe-name=weight")
@@ -133,13 +133,12 @@ impl TrainingExportConfig {
             let weight = weight.parse::<u32>().map_err(|_| {
                 invalid_training_split("training split weight must be a positive integer")
             })?;
-            if weight == 0 || weight > TRAINING_SPLIT_WEIGHT_TOTAL {
-                return Err(invalid_training_split(
-                    "training split weight must be between 1 and 10000",
-                )
-                .into());
+            if weight == 0 {
+                return Err(
+                    invalid_training_split("training split weight must be positive").into(),
+                );
             }
-            total = total.checked_add(weight).ok_or_else(|| {
+            total = total.checked_add(u64::from(weight)).ok_or_else(|| {
                 invalid_training_split("training split weights overflow their limit")
             })?;
             splits.push(TrainingSplitConfig {
@@ -147,12 +146,35 @@ impl TrainingExportConfig {
                 weight,
             });
         }
-        if total != TRAINING_SPLIT_WEIGHT_TOTAL {
-            return Err(
-                invalid_training_split("training split weights must total exactly 10000").into(),
-            );
-        }
         splits.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut normalized_total = 0u32;
+        let mut remainders = Vec::with_capacity(splits.len());
+        for (index, split) in splits.iter_mut().enumerate() {
+            let scaled = u64::from(split.weight) * u64::from(TRAINING_SPLIT_WEIGHT_TOTAL);
+            split.weight = (scaled / total) as u32;
+            normalized_total += split.weight;
+            remainders.push((scaled % total, index));
+        }
+        remainders.sort_by(
+            |(left_remainder, left_index), (right_remainder, right_index)| {
+                right_remainder
+                    .cmp(left_remainder)
+                    .then_with(|| splits[*left_index].name.cmp(&splits[*right_index].name))
+            },
+        );
+        for (_, index) in remainders
+            .into_iter()
+            .take((TRAINING_SPLIT_WEIGHT_TOTAL - normalized_total) as usize)
+        {
+            splits[index].weight += 1;
+        }
+        if let Some(split) = splits.iter().find(|split| split.weight == 0) {
+            return Err(invalid_training_split(format!(
+                "training split {:?} is too small after normalization",
+                split.name
+            ))
+            .into());
+        }
         Ok(Self {
             format: "jsonl".into(),
             record_encoding: "source-json-lf-v1".into(),
@@ -1927,6 +1949,46 @@ fn valid_shard_path(path: &str, split: &str, index: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_split_normalization_uses_a_stable_largest_remainder() {
+        let config = TrainingExportConfig::new(
+            "seed".into(),
+            &["c=1".into(), "a=1".into(), "b=1".into()],
+            1,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            vec![("a", 3334), ("b", 3333), ("c", 3333)],
+            config
+                .splits
+                .iter()
+                .map(|split| (split.name.as_str(), split.weight))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn normalization_distributes_remainders_before_rejecting_zero_allocations() {
+        let config = TrainingExportConfig::new(
+            "seed".into(),
+            &["tiny=1".into(), "large=10000".into()],
+            1,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            vec![("large", 9999), ("tiny", 1)],
+            config
+                .splits
+                .iter()
+                .map(|split| (split.name.as_str(), split.weight))
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn unsupported_atomic_directory_publication_explains_the_safe_recovery() {

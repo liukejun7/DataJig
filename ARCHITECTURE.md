@@ -5,7 +5,7 @@ sources and model-training consumers and makes each material change explicit,
 reviewable, reproducible, and addressable by identity.
 
 ```text
-local files / Hugging Face dataset repositories
+local files or directories / Hugging Face dataset repositories
                     │
                     ▼
        source adapters and immutable plans
