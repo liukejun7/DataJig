@@ -646,17 +646,14 @@ impl Drop for JsonlDatasetSnapshot {
     }
 }
 
-fn snapshot_jsonl_dataset(dataset: &Path) -> Result<JsonlDatasetSnapshot> {
+fn snapshot_jsonl_dataset(dataset: &Path, staging_parent: &Path) -> Result<JsonlDatasetSnapshot> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    let parent = dataset
-        .parent()
-        .context("workspace JSONL dataset has no parent directory")?;
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let mut root = None;
     for attempt in 0..32 {
-        let candidate = parent.join(format!(
+        let candidate = staging_parent.join(format!(
             ".datajig-snapshot-{}-{stamp}-{attempt}",
             std::process::id()
         ));
@@ -711,8 +708,10 @@ pub fn initialize_jsonl_workspace_with_receipt(
     if !dataset.is_file() {
         return Err(InvalidArgumentError::new("JSONL workspace dataset is not a file").into());
     }
+    let state = safe_state_directory(state, &dataset)?;
+    let staging_parent = nearest_existing_directory(&state)?;
     let snapshot = source_receipt
-        .map(|_| snapshot_jsonl_dataset(&dataset))
+        .map(|_| snapshot_jsonl_dataset(&dataset, &staging_parent))
         .transpose()?;
     let inspection_dataset = snapshot
         .as_ref()
@@ -728,7 +727,6 @@ pub fn initialize_jsonl_workspace_with_receipt(
             .and_then(|verified| crate::TransformLineage::from_verified_receipt(&verified))
         })
         .transpose()?;
-    let state = safe_state_directory(state, &dataset)?;
     let state_dir = path_text(&state, "state directory")?;
     if state.join(WORKSPACE_FILE).exists() {
         return Err(InvalidArgumentError::new("workspace is already initialized").into());
@@ -4152,6 +4150,24 @@ fn safe_state_directory(state: &Path, dataset: &Path) -> Result<PathBuf> {
         .into());
     }
     Ok(resolved)
+}
+
+fn nearest_existing_directory(path: &Path) -> Result<PathBuf> {
+    let mut existing = path;
+    while !existing.exists() {
+        existing = existing
+            .parent()
+            .context("workspace state has no existing parent directory")?;
+    }
+    let existing = existing
+        .canonicalize()
+        .context("cannot resolve workspace state staging parent")?;
+    if !existing.is_dir() {
+        return Err(
+            InvalidArgumentError::new("workspace state staging parent is not a directory").into(),
+        );
+    }
+    Ok(existing)
 }
 
 fn lexical_normalize(path: PathBuf) -> PathBuf {

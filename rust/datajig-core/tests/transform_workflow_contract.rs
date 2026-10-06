@@ -511,6 +511,32 @@ fn lineage_verified_receipt_changes_revision_identity_and_initializes_workspace(
     let _ = fs::remove_dir_all(fixture.root);
 }
 
+#[cfg(unix)]
+#[test]
+fn receipt_backed_init_supports_a_read_only_dataset_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = workflow_fixture("readonly-lineage");
+    let planned = plan_transform(fixture.request()).unwrap();
+    apply_transform(&fixture.plan, &planned.plan_id, &fixture.provider).unwrap();
+    let state = temporary_path("readonly-lineage-state");
+    fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = initialize_jsonl_workspace_with_receipt(
+        &fixture.output,
+        &state,
+        "id",
+        None,
+        Some(&fixture.receipt()),
+    );
+
+    fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o700)).unwrap();
+    let artifact = result.unwrap();
+    assert_eq!(state.to_string_lossy(), artifact.state_dir);
+    let _ = fs::remove_dir_all(state);
+    let _ = fs::remove_dir_all(fixture.root);
+}
+
 #[test]
 fn lineage_rejects_wrong_id_or_edited_output_before_workspace_creation() {
     let fixture = workflow_fixture("lineage-hostile");
