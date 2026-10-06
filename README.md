@@ -40,7 +40,7 @@ code identity-pinned, integrity-checked records. Every task, candidate, review,
 accepted revision, subset, and training bundle receives a deterministic identity.
 Stale evidence and out-of-scope mutations fail closed.
 
-> Version `0.5.0` · local-first · Rust-native core · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.5.1` · local-first · Rust-native core · CSV, Parquet, JSONL, and ImageFolder
 
 ## Why DataJig
 
@@ -63,6 +63,17 @@ Install the stable wheel. It already contains the Rust core:
 python -m pip install datajig
 datajig capabilities
 ```
+
+Run the complete workflow once without preparing any input files:
+
+```bash
+datajig tutorial ./datajig-tutorial
+```
+
+The command requires a new destination and creates a tiny keyed JSONL dataset,
+an immutable workspace, one reviewed and sealed agent change, and a verified
+training bundle. Its bounded JSON response contains every resulting identity
+and the exact `export-info` verification action.
 
 Discovery responses expose a deterministic `agent_contract_id` covering the
 command catalog and input artifact schemas. Pin it in Agent or CI integrations
@@ -105,6 +116,11 @@ datajig inspect data/papers.parquet --id-field paper_id
 and ID health without printing cell values or raw IDs. For CSV and Parquet it
 also returns an editable preparation recipe template and a `prepare-plan` next
 action. For JSONL it recommends workspace initialization when the file is ready.
+
+CSV and flat Parquet are native inspection and deterministic preparation
+inputs. The task-scoped transactional workspace currently operates on keyed
+JSONL, so tabular sources are prepared into JSONL before change control. XLSX
+and direct database/Hive/Spark connectors are not native adapters yet.
 
 Compare two keyed JSONL revisions without creating a workspace:
 
@@ -278,31 +294,30 @@ After the agent edits the file, freeze and review the exact candidate:
 
 ```bash
 datajig changeset-stage --change chg_...
-datajig check --change chg_... --changeset changeset_...
+datajig check
 ```
 
-For the common single-task workspace, agents can avoid copying long identities:
+When exactly one declaration and staged candidate match the current dataset,
+adapter, and HEAD, `check`, `plan`, `status`, and `seal` resolve that context
+automatically. DataJig refuses to guess when the workspace is empty or
+ambiguous. Explicit IDs and aliases remain available when choosing among
+multiple candidates:
 
 ```bash
 datajig check --change @active --changeset @latest
 ```
 
-These aliases resolve only when exactly one declaration and staged candidate
-match the current dataset, adapter, and HEAD. DataJig refuses to guess when the
-workspace is ambiguous. If the arguments are omitted, the error names the
-unique active identities when available and includes an executable
-`next_actions` entry.
-
 Workspace workflow commands return JSON with a `decision` and populated
 `next_actions`. Follow those actions to inspect findings, restage a fix, or seal
-the accepted revision:
+the accepted revision. A failed check immediately returns both the deterministic
+remediation-plan command and a bounded findings query as argv arrays; it never
+guesses a domain value or silently applies a patch:
 
 ```bash
+datajig plan
 datajig findings .datajig/latest.review.json --offset 0 --limit 50
 
 datajig seal \
-  --change chg_... \
-  --changeset changeset_... \
   --accept-report review_... \
   --message "Accept normalized metadata"
 ```
@@ -422,6 +437,11 @@ positive weight, and make all weights total exactly `10000`. This contract and
 the complete example are visible in `export --help` and `capabilities`.
 Invalid arguments return structured remediation and executable `next_actions`
 instead of requiring an agent to infer the syntax by trial and error.
+
+`--max-shard-records` accepts values from `1`; the final shard may contain fewer
+records. `--max-shard-bytes` is a soft target from `1` byte: when one valid
+record is larger than the target, that record occupies a shard by itself. The
+independent 16 MiB JSONL line safety limit is unchanged.
 
 Reproduce a training bundle from any reachable retained revision—even when the
 working file has changed, moved, or been deleted:
@@ -594,8 +614,10 @@ datajig agent-skill --output .agents/skills/datajig/SKILL.md
 | Verified Python, PyTorch, and Hugging Face consumption | Available |
 | ImageFolder semantic review and HTML report | Available |
 | Universal directory snapshots | Available |
+| Runnable end-to-end tutorial | Available on Linux and macOS |
 | Linux x86_64/aarch64 and macOS x86_64/arm64 wheels | Published |
-| Windows workspace writes | Not yet supported |
+| Windows through WSL | Supported using the Linux wheel |
+| Native Windows workspace writes | Not yet supported |
 | S3/GCS/Azure, Oxen, and DVC source adapters | Planned |
 | Automatic model-training orchestration | Out of scope |
 
@@ -646,12 +668,9 @@ Requirements: Python 3.11+ and Rust 1.85+.
 DataJig is becoming the default control layer between an agent and its data:
 
 1. Arrow batch execution, joins, dataset-wide numeric transforms, and multi-record patch sets;
-2. proof-carrying training-consumption receipts;
-3. one-command Agent Skill, hook, and CI installation;
-4. revision adapters for S3/GCS/Azure, Oxen, DVC, and additional dataset hubs.
+2. XLSX and database snapshot adapters, followed by Spark/Hive manifests;
+3. revision adapters for S3/GCS/Azure, Oxen, DVC, and additional dataset hubs;
+4. native Windows filesystem semantics and wheels.
 
 The goal is simple: an agent should always know what it changed, prove what it
 reviewed, recover safely, and hand training code a verified input.
-
-See [the architecture](ARCHITECTURE.md) for system boundaries and
-[the roadmap](ROADMAP.md) for the shipped/next/later split.

@@ -26,27 +26,138 @@ class WorkspaceWorkflowTests(DataJigCliTestCase):
         self.assertEqual(change_id, checked["artifact"]["change_id"])
         self.assertEqual(changeset_id, checked["artifact"]["changeset_id"])
 
-    def test_missing_jsonl_changeset_binding_suggests_the_unique_active_ids(self) -> None:
+    def test_unique_active_changeset_needs_no_ids_through_seal(self) -> None:
         dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
         change_id, _ = self.begin_change("missing-binding")
         self.write_jsonl(dataset, [{"id": "alpha", "score": 2}])
         changeset_id, _ = self.stage_change(change_id)
 
-        failed = self.assert_cli_error("INVALID_ARGUMENT", "check", "--state", self.state)
-
-        self.assertIn(change_id, failed.payload["error"]["message"])
-        self.assertIn(changeset_id, failed.payload["error"]["message"])
-        self.assertEqual("check", failed.payload["next_actions"][0]["command"])
+        checked = self.run_cli("check", "--state", self.state).payload
+        review = checked["artifact"]
+        self.assertEqual(change_id, review["change_id"])
+        self.assertEqual(changeset_id, review["changeset_id"])
         self.assertEqual(
             [
                 "--state",
                 str(self.state),
                 "--change",
-                "@active",
+                change_id,
                 "--changeset",
-                "@latest",
+                changeset_id,
+                "--accept-report",
+                review["report_content_id"],
             ],
-            failed.payload["next_actions"][0]["args"],
+            checked["next_actions"][-1]["args"],
+        )
+
+        status_result = self.run_cli("status", "--state", self.state).payload
+        status = status_result["artifact"]
+        self.assertEqual(change_id, status["change_id"])
+        self.assertEqual(changeset_id, status["changeset_id"])
+        self.assertEqual(
+            [
+                "--state",
+                str(self.state),
+                "--change",
+                change_id,
+                "--changeset",
+                changeset_id,
+            ],
+            status_result["next_actions"][0]["args"],
+        )
+
+        planned = self.run_cli("plan", "--state", self.state).payload
+        self.assertEqual(review["report_content_id"], planned["artifact"]["report_content_id"])
+        self.assertEqual(
+            [
+                "--state",
+                str(self.state),
+                "--change",
+                change_id,
+                "--changeset",
+                changeset_id,
+                "--accept-report",
+                review["report_content_id"],
+            ],
+            planned["next_actions"][-1]["args"],
+        )
+
+        sealed = self.run_cli(
+            "seal",
+            "--state",
+            self.state,
+            "--accept-report",
+            review["report_content_id"],
+            "--message",
+            "Accept automatically resolved candidate",
+        ).payload["artifact"]
+        self.assertEqual(change_id, sealed["change_id"])
+        self.assertEqual(changeset_id, sealed["changeset_id"])
+
+    def test_automatic_context_fails_closed_when_no_candidate_exists(self) -> None:
+        self.initialize_jsonl([{"id": "alpha", "score": 1}])
+
+        failed = self.assert_cli_error("INVALID_ARGUMENT", "check", "--state", self.state)
+
+        self.assertIn(
+            "found 0 compatible active change declarations",
+            failed.payload["error"]["message"],
+        )
+
+    def test_automatic_context_fails_closed_when_candidates_are_ambiguous(self) -> None:
+        dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
+        self.begin_change("first-candidate")
+        self.begin_change("second-candidate")
+        self.write_jsonl(dataset, [{"id": "alpha", "score": 2}])
+
+        failed = self.assert_cli_error("INVALID_ARGUMENT", "check", "--state", self.state)
+
+        self.assertIn(
+            "found 2 compatible active change declarations",
+            failed.payload["error"]["message"],
+        )
+
+        status_failed = self.assert_cli_error(
+            "INVALID_ARGUMENT", "status", "--state", self.state
+        )
+        self.assertIn(
+            "found 2 compatible active change declarations",
+            status_failed.payload["error"]["message"],
+        )
+
+    def test_failed_check_returns_plan_and_bounded_findings_actions(self) -> None:
+        policy = self.root / "quality.json"
+        policy.write_text(
+            '{"namespace":"datajig","schema_version":1,"adapter":"jsonl",'
+            '"mode":"changed_only","fields":{"score":{"types":["number"],'
+            '"maximum":1}}}',
+            encoding="utf-8",
+        )
+        dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}], policy=policy)
+        change_id, _ = self.begin_change("repair-actions")
+        self.write_jsonl(dataset, [{"id": "alpha", "score": 2}])
+        self.stage_change(change_id)
+
+        checked = self.run_cli("check", "--state", self.state).payload
+
+        self.assertEqual(
+            ["plan", "findings"],
+            [action["command"] for action in checked["next_actions"]],
+        )
+        self.assertEqual(
+            [
+                "--state",
+                str(self.state),
+                "--change",
+                change_id,
+                "--changeset",
+                checked["artifact"]["changeset_id"],
+            ],
+            checked["next_actions"][0]["args"],
+        )
+        self.assertEqual(
+            [checked["artifact"]["report_path"], "--offset", "0", "--limit", "50"],
+            checked["next_actions"][1]["args"],
         )
 
     def test_changeset_check_and_seal_advance_head_once_and_leave_clean_status(self) -> None:

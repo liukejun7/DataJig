@@ -134,7 +134,7 @@ fn managed_assets_pin_one_contract_and_exact_package_version() {
 
     let workflow = String::from_utf8(render_repository_workflow()).unwrap();
     assert!(workflow.contains("permissions:\n  contents: read"));
-    assert!(workflow.contains("python -m pip install \"datajig==0.5.0\""));
+    assert!(workflow.contains("python -m pip install \"datajig==0.5.1\""));
     assert!(workflow.contains("datajig repository-check --root . --ci"));
     assert!(workflow.contains("actions/checkout@11d5960a326750d5838078e36cf38b85af677262"));
 

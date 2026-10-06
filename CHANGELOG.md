@@ -3,6 +3,25 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.1] - 2026-10-06
+
+### Added
+
+- `datajig tutorial OUTPUT` runs a complete keyed-JSONL change-control and
+  verified training-export workflow in a new self-contained directory.
+- Failed checks expose immediate bounded `plan` and `findings` actions.
+
+### Changed
+
+- `check`, `plan`, `status`, and `seal` automatically resolve a unique active
+  change and staged candidate when both long identifiers are omitted.
+- Python console-script help for native commands now preserves the authoritative
+  Rust usage, examples, aliases, and argument descriptions.
+- Training exports accept one-record and one-byte shard targets. The byte target
+  is soft when one valid record must occupy an oversize singleton shard.
+- Public format and platform documentation now distinguishes native CSV/Parquet
+  preparation, keyed-JSONL workspaces, WSL support, and planned adapters.
+
 ## [0.5.0] - 2026-10-06
 
 ### Added

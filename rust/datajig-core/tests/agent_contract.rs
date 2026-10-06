@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_b01d427583cc4c31b90f82c3480c27de684a94d7eed5e12d9ff86e490b8200e5", identities[0],
+        "contract_51698280ba2e0015b8c9a74ac80eceaaed2e239ebaecbc56f2571b0ed1d8f0d8", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }
@@ -216,9 +216,12 @@ fn export_help_and_capabilities_explain_the_split_contract_up_front() {
     let help = run(&["export", "--help"]);
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
+    let lower_help = help.to_lowercase();
     assert!(help.contains("NAME=WEIGHT"));
     assert!(help.contains("10000"));
     assert!(help.contains("--split train=7000 --split val=2000 --split test=1000"));
+    assert!(lower_help.contains("soft byte target"));
+    assert!(lower_help.contains("final shards may contain fewer records"));
 
     let capabilities = run_json(&["capabilities"]);
     assert_eq!(
@@ -232,6 +235,15 @@ fn export_help_and_capabilities_explain_the_split_contract_up_front() {
     assert_eq!(
         json!(["train=7000", "val=2000", "test=1000"]),
         capabilities["argument_contracts"]["training_split"]["example"]
+    );
+    assert_eq!(
+        json!(1),
+        capabilities["limits"]["min_training_shard_records"]
+    );
+    assert_eq!(json!(1), capabilities["limits"]["min_training_shard_bytes"]);
+    assert_eq!(
+        json!("soft_target_with_oversize_single_record_shards"),
+        capabilities["argument_contracts"]["training_shard"]["byte_limit"]
     );
 }
 
@@ -277,6 +289,7 @@ fn check_help_and_descriptor_publish_context_aliases() {
     let help = String::from_utf8(help.stdout).unwrap();
     assert!(help.contains("@active"));
     assert!(help.contains("@latest"));
+    assert!(help.contains("Omit both"));
 
     let descriptor = run_json(&["describe", "check"]);
     let inputs = descriptor["command"]["inputs"].as_array().unwrap();
@@ -290,9 +303,63 @@ fn check_help_and_descriptor_publish_context_aliases() {
         .unwrap();
     assert!(change["description"].as_str().unwrap().contains("@active"));
     assert!(
+        change["description"]
+            .as_str()
+            .unwrap()
+            .contains("omit both")
+    );
+    assert!(
         changeset["description"]
             .as_str()
             .unwrap()
             .contains("@latest")
+    );
+
+    let capabilities = run_json(&["capabilities"]);
+    assert_eq!(
+        json!("resolve the unique active pair or fail closed"),
+        capabilities["argument_contracts"]["changeset_selectors"]["omission"]
+    );
+
+    for command_name in ["plan", "seal", "status"] {
+        let descriptor = run_json(&["describe", command_name]);
+        let inputs = descriptor["command"]["inputs"].as_array().unwrap();
+        for selector in ["change", "changeset"] {
+            let input = inputs
+                .iter()
+                .find(|input| input["name"] == selector)
+                .unwrap();
+            assert!(
+                input["description"].as_str().unwrap().contains("omit both"),
+                "{command_name} {selector} should explain automatic context"
+            );
+        }
+    }
+}
+
+#[test]
+fn tutorial_is_a_discoverable_bounded_write_workflow() {
+    let descriptor = run_json(&["describe", "tutorial"]);
+    assert_eq!(
+        json!("datajig tutorial <OUTPUT>"),
+        descriptor["command"]["usage"]
+    );
+    assert_eq!(
+        json!(["linux", "macos"]),
+        descriptor["command"]["platforms"]
+    );
+    assert_eq!(json!(false), descriptor["command"]["read_only"]);
+    assert_eq!(json!(true), descriptor["command"]["output"]["bounded"]);
+    assert_eq!(
+        json!("tutorial_completed"),
+        descriptor["command"]["output"]["kind"]
+    );
+
+    let capabilities = run_json(&["capabilities"]);
+    assert!(
+        capabilities["commands"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("tutorial"))
     );
 }

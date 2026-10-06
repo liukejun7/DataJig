@@ -30,6 +30,7 @@ mod tabular_inspect;
 mod tabular_source;
 mod training_bundle;
 mod training_consumption;
+mod tutorial;
 mod workspace;
 mod workspace_store;
 
@@ -155,6 +156,7 @@ pub use training_consumption::{
     TrainingConsumptionPlanArtifact, TrainingConsumptionRuntime, inspect_training_consumption,
     plan_training_consumption,
 };
+pub use tutorial::{TutorialArtifact, run_tutorial};
 #[cfg(unix)]
 use walkdir::WalkDir;
 pub use workspace::{
@@ -168,8 +170,9 @@ pub use workspace::{
     export_training_bundle_with_view_at_revision, initialize_jsonl_workspace,
     initialize_jsonl_workspace_with_policy, initialize_workspace, is_patchable_quality_code,
     locate_changeset_finding, materialize_revision, plan_changeset, plan_workspace,
-    preview_jsonl_patch, resolve_changeset_selectors, revision_log, seal_changeset, seal_workspace,
-    stage_changeset, status_changeset, status_workspace, undo_jsonl_patch,
+    preview_jsonl_patch, resolve_changeset_selectors, resolve_optional_changeset_context,
+    revision_log, seal_changeset, seal_workspace, stage_changeset, status_changeset,
+    status_workspace, undo_jsonl_patch,
 };
 pub use workspace_store::{WorkspaceLock, WorkspaceRefs, WorkspaceStore};
 

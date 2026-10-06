@@ -949,6 +949,30 @@ pub fn resolve_changeset_selectors(
     )
 }
 
+pub fn resolve_optional_changeset_context(
+    state: &Path,
+    change_selector: Option<&str>,
+    changeset_selector: Option<&str>,
+) -> Result<Option<(String, String)>> {
+    match (change_selector, changeset_selector) {
+        (Some(change), Some(changeset)) => {
+            resolve_changeset_selectors(state, change, changeset).map(Some)
+        }
+        (None, None) => {
+            let (state_dir, workspace) = load_workspace_compatible(state)?;
+            if workspace.adapter != "jsonl" {
+                return Ok(None);
+            }
+            resolve_changeset_selectors_in_workspace(&state_dir, &workspace, "@active", "@latest")
+                .map(Some)
+        }
+        _ => Err(InvalidArgumentError::new(
+            "--change and --changeset must be provided together or both omitted",
+        )
+        .into()),
+    }
+}
+
 fn resolve_changeset_selectors_in_workspace(
     state_dir: &Path,
     workspace: &WorkspaceConfig,

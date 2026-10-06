@@ -473,9 +473,14 @@ impl WorkspaceStore {
     fn list_object_ids(&self, kind: &str, prefix: &str) -> Result<Vec<String>> {
         let directory = self.root.join("objects").join(kind);
         let mut ids = Vec::new();
-        for entry in fs::read_dir(&directory)
-            .with_context(|| format!("cannot list workspace {kind} objects"))?
-        {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot list workspace {kind} objects"));
+            }
+        };
+        for entry in entries {
             let entry = entry.with_context(|| format!("cannot inspect workspace {kind} object"))?;
             let file_type = entry
                 .file_type()

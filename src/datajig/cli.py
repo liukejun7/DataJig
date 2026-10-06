@@ -93,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     describe_parser.add_argument("native_command", nargs="?")
 
+    tutorial_parser = subparsers.add_parser(
+        "tutorial", help="run a complete verified example workflow"
+    )
+    tutorial_parser.add_argument("output", type=Path)
+
     init_parser = subparsers.add_parser(
         "init", help="track a dataset and record its last-good baseline"
     )
@@ -377,8 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         and raw_args[0] in NATIVE_COMMANDS
         and any(item in {"-h", "--help"} for item in raw_args[1:])
     ):
-        build_parser().parse_args(raw_args)
-        return 0
+        return _run_native_command(raw_args)
     if raw_args and raw_args[0] in NATIVE_COMMANDS:
         return _run_native_command(raw_args)
     parser = build_parser()

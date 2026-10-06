@@ -33,6 +33,7 @@ NATIVE_WORKSPACE_COMMANDS = frozenset(
         "plan",
         "seal",
         "status",
+        "tutorial",
         "view-check",
     }
 )

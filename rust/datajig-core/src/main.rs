@@ -20,9 +20,9 @@ use datajig_core::{
     inspect_training_bundle_with_consumer, inspect_training_consumption, install_repository,
     is_patchable_quality_code, list_findings, load_manifest, load_report, locate_changeset_finding,
     manifest_diff_page, materialize_revision, plan_changeset, plan_hf_import, plan_prepare,
-    plan_training_consumption, plan_workspace, preview_jsonl_patch, resolve_changeset_selectors,
-    revision_log, seal_changeset, seal_workspace, stage_changeset, status_changeset,
-    status_workspace, undo_jsonl_patch, write_agent_skill,
+    plan_training_consumption, plan_workspace, preview_jsonl_patch,
+    resolve_optional_changeset_context, revision_log, run_tutorial, seal_changeset, seal_workspace,
+    stage_changeset, status_changeset, status_workspace, undo_jsonl_patch, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -82,6 +82,11 @@ enum Command {
         /// Optional command name to describe.
         command: Option<String>,
     },
+    /// Create and run a complete verified JSONL-to-training example.
+    Tutorial {
+        /// New directory that will contain the example dataset, workspace, and bundle.
+        output: PathBuf,
+    },
     /// Initialize a project-local last-good baseline for a dataset.
     Init {
         /// ImageFolder directory or JSONL file to track.
@@ -119,8 +124,10 @@ enum Command {
         /// Repeatable NAME=WEIGHT basis-point split; positive integer weights must total 10000.
         #[arg(long = "split", required = true, value_name = "NAME=WEIGHT")]
         splits: Vec<String>,
+        /// Record target per shard. Final shards may contain fewer records.
         #[arg(long, default_value_t = DEFAULT_TRAINING_SHARD_RECORDS)]
         max_shard_records: usize,
+        /// Soft byte target; a larger single record occupies its own shard.
         #[arg(long, default_value_t = DEFAULT_TRAINING_SHARD_BYTES)]
         max_shard_bytes: u64,
     },
@@ -194,10 +201,10 @@ enum Command {
         /// Maximum perceptual-hash Hamming distance.
         #[arg(long, default_value_t = 6)]
         phash_threshold: usize,
-        /// Exact chg_... ID, or @active/@latest when one compatible declaration exists.
+        /// Exact chg_... ID, or @active/@latest. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "changeset")]
         change: Option<String>,
-        /// Exact changeset_... ID, or @latest/@active when one compatible stage exists.
+        /// Exact changeset_... ID, or @latest/@active. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
     },
@@ -228,8 +235,10 @@ enum Command {
         /// Project-local state directory created by init.
         #[arg(long, default_value = ".datajig")]
         state: PathBuf,
+        /// Exact chg_... ID or alias. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "changeset")]
         change: Option<String>,
+        /// Exact changeset_... ID or alias. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
     },
@@ -398,8 +407,10 @@ enum Command {
         /// Exact review_ID required when a passing review contains findings.
         #[arg(long)]
         accept_report: Option<String>,
+        /// Exact chg_... ID or alias. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "changeset")]
         change: Option<String>,
+        /// Exact changeset_... ID or alias. Omit both selectors to resolve one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
     },
@@ -411,8 +422,10 @@ enum Command {
         /// Number of media inventory threads.
         #[arg(long, visible_alias = "workers", default_value_t = 1)]
         threads: usize,
+        /// Exact chg_... ID or alias. Omit both selectors to inspect one active pair.
         #[arg(long, requires = "changeset")]
         change: Option<String>,
+        /// Exact changeset_... ID or alias. Omit both selectors to inspect one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
     },
@@ -867,9 +880,14 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                         "repeatable": true,
                         "example": ["train=7000", "val=2000", "test=1000"]
                     },
+                    "training_shard": {
+                        "record_limit": "hard_target_final_shard_may_be_smaller",
+                        "byte_limit": "soft_target_with_oversize_single_record_shards"
+                    },
                     "changeset_selectors": {
                         "aliases": ["@active", "@latest"],
-                        "resolution": "unique compatible candidate or fail closed"
+                        "resolution": "unique compatible candidate or fail closed",
+                        "omission": "resolve the unique active pair or fail closed"
                     }
                 }),
             );
@@ -903,6 +921,25 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 })
             };
             println!("{payload}");
+        }
+        Command::Tutorial { output } => {
+            let artifact =
+                run_tutorial(&output).map_err(|error| (workspace_error_code(&error), 2, error))?;
+            println!(
+                "{}",
+                json!({
+                    "agent_api_version": AGENT_API_VERSION,
+                    "backend": "rust",
+                    "kind": "tutorial_completed",
+                    "decision": "ready",
+                    "next_actions": [{"command": "export-info", "args": [
+                        artifact.manifest_path, "--verify",
+                        "--expect-bundle", artifact.bundle_id,
+                        "--expect-revision", artifact.revision_id
+                    ]}],
+                    "artifact": artifact
+                })
+            );
         }
         Command::Init {
             dataset,
@@ -1150,13 +1187,9 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             change,
             changeset,
         } => {
-            let resolved_binding = match (change.as_deref(), changeset.as_deref()) {
-                (Some(change), Some(changeset)) => Some(
-                    resolve_changeset_selectors(&state, change, changeset)
-                        .map_err(|error| (workspace_error_code(&error), 2, error))?,
-                ),
-                _ => None,
-            };
+            let resolved_binding =
+                resolve_optional_changeset_context(&state, change.as_deref(), changeset.as_deref())
+                    .map_err(|error| (workspace_error_code(&error), 2, error))?;
             let binding = resolved_binding
                 .as_ref()
                 .map(|(change, changeset)| (change.as_str(), changeset.as_str()));
@@ -1168,27 +1201,40 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             }
             .map_err(|error| (workspace_error_code(&error), 2, error))?;
             let next_actions = if let Some((change_id, changeset_id)) = binding {
+                let context_args = json!([
+                    "--state",
+                    state,
+                    "--change",
+                    change_id,
+                    "--changeset",
+                    changeset_id
+                ]);
                 if artifact.decision == "seal" && artifact.findings > 0 {
+                    let seal_args = json!([
+                        "--state",
+                        state,
+                        "--change",
+                        change_id,
+                        "--changeset",
+                        changeset_id,
+                        "--accept-report",
+                        artifact.report_content_id
+                    ]);
                     json!([
                         {"command": "findings", "args": [
                             artifact.report_path, "--offset", "0", "--limit", "50"
                         ]},
-                        {"command": "seal", "args": [
-                            "--state", state, "--change", change_id,
-                            "--changeset", changeset_id,
-                            "--accept-report", artifact.report_content_id
-                        ]}
+                        {"command": "seal", "args": seal_args}
                     ])
                 } else if artifact.decision == "seal" {
-                    json!([{"command": "seal", "args": [
-                        "--state", state, "--change", change_id,
-                        "--changeset", changeset_id
-                    ]}])
+                    json!([{"command": "seal", "args": context_args}])
                 } else {
-                    json!([{"command": "plan", "args": [
-                        "--state", state, "--change", change_id,
-                        "--changeset", changeset_id
-                    ]}])
+                    json!([
+                        {"command": "plan", "args": context_args},
+                        {"command": "findings", "args": [
+                            artifact.report_path, "--offset", "0", "--limit", "50"
+                        ]}
+                    ])
                 }
             } else if artifact.decision == "seal" && artifact.findings > 0 {
                 json!([
@@ -1224,7 +1270,12 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             change,
             changeset,
         } => {
-            let binding = change.as_deref().zip(changeset.as_deref());
+            let resolved_binding =
+                resolve_optional_changeset_context(&state, change.as_deref(), changeset.as_deref())
+                    .map_err(|error| (workspace_error_code(&error), 2, error))?;
+            let binding = resolved_binding
+                .as_ref()
+                .map(|(change, changeset)| (change.as_str(), changeset.as_str()));
             let artifact = match binding {
                 Some((change_id, changeset_id)) => {
                     plan_changeset(&state, 1, change_id, changeset_id)
@@ -1233,23 +1284,37 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             }
             .map_err(|error| (workspace_error_code(&error), 2, error))?;
             let next_actions = if let Some((change_id, changeset_id)) = binding {
+                let context_args = json!([
+                    "--state",
+                    state,
+                    "--change",
+                    change_id,
+                    "--changeset",
+                    changeset_id
+                ]);
                 if artifact.decision == "seal" {
+                    let seal_args = json!([
+                        "--state",
+                        state,
+                        "--change",
+                        change_id,
+                        "--changeset",
+                        changeset_id,
+                        "--accept-report",
+                        artifact.plan.report_content_id
+                    ]);
                     json!([
                         {"command": "findings", "args": [
                             format!("{}/latest.review.json", artifact.state_dir),
                             "--offset", "0", "--limit", "50"
                         ]},
-                        {"command": "seal", "args": [
-                            "--state", state, "--change", change_id,
-                            "--changeset", changeset_id,
-                            "--accept-report", artifact.plan.report_content_id
-                        ]}
+                        {"command": "seal", "args": seal_args}
                     ])
                 } else {
                     json!([{"command": "findings", "args": [
                         format!("{}/latest.review.json", artifact.state_dir),
                         "--offset", "0", "--limit", "50"
-                    ]}])
+                    ]}, {"command": "check", "args": context_args}])
                 }
             } else if artifact.decision == "seal" {
                 json!([
@@ -1593,7 +1658,12 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             change,
             changeset,
         } => {
-            let binding = change.as_deref().zip(changeset.as_deref());
+            let resolved_binding =
+                resolve_optional_changeset_context(&state, change.as_deref(), changeset.as_deref())
+                    .map_err(|error| (workspace_error_code(&error), 2, error))?;
+            let binding = resolved_binding
+                .as_ref()
+                .map(|(change, changeset)| (change.as_str(), changeset.as_str()));
             let artifact = match binding {
                 Some((change_id, changeset_id)) => seal_changeset(
                     &state,
@@ -1633,12 +1703,32 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             change,
             changeset,
         } => {
-            let binding = change.as_deref().zip(changeset.as_deref());
+            let automatic_binding = change.is_none() && changeset.is_none();
+            let workspace_status = if automatic_binding {
+                Some(
+                    status_workspace(&state, threads)
+                        .map_err(|error| (workspace_error_code(&error), 2, error))?,
+                )
+            } else {
+                None
+            };
+            let resolved_binding = if workspace_status.as_ref().is_some_and(|status| status.clean) {
+                None
+            } else if automatic_binding {
+                resolve_optional_changeset_context(&state, None, None)
+                    .map_err(|error| (workspace_error_code(&error), 2, error))?
+            } else {
+                resolve_optional_changeset_context(&state, change.as_deref(), changeset.as_deref())
+                    .map_err(|error| (workspace_error_code(&error), 2, error))?
+            };
+            let binding = resolved_binding
+                .as_ref()
+                .map(|(change, changeset)| (change.as_str(), changeset.as_str()));
             let artifact = match binding {
                 Some((change_id, changeset_id)) => {
                     status_changeset(&state, threads, change_id, changeset_id)
                 }
-                None => status_workspace(&state, threads),
+                None => Ok(workspace_status.expect("automatic status was loaded")),
             }
             .map_err(|error| (workspace_error_code(&error), 2, error))?;
             let next_actions = if let Some((change_id, changeset_id)) = binding {

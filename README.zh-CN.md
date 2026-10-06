@@ -24,7 +24,7 @@ DataJig 把上游原始 bytes 和 Agent 的一次数据修改变成可追溯训�
 任务、候选、审查、接受的 revision、数据子集和训练 bundle 都有确定性身份；
 证据过期或混入计划外修改时会拒绝继续。
 
-> 版本 `0.5.0` · 本地优先 · Rust 原生内核 · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.5.1` · 本地优先 · Rust 原生内核 · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## 为什么需要 DataJig
 
@@ -47,6 +47,16 @@ stdout 只返回适合 Agent 上下文窗口的有界 JSON。
 python -m pip install datajig
 datajig capabilities
 ```
+
+无需准备输入文件，先用一条命令实际跑完整流程：
+
+```bash
+datajig tutorial ./datajig-tutorial
+```
+
+命令要求目标目录尚不存在，并自动生成一个小型 keyed JSONL 数据集、不可变 workspace、
+一次经过审查和 seal 的 Agent 修改，以及可验证训练 bundle。有界 JSON 响应会返回所有
+关键身份和精确的 `export-info` 校验动作。
 
 发现类命令会返回确定性的 `agent_contract_id`，覆盖命令目录和输入 artifact schema。
 当 Agent 或 CI 需要在协议未经审查即发生变化时 fail closed，可以锁定这个身份；生成的
@@ -84,6 +94,10 @@ datajig inspect data/papers.parquet --id-field paper_id
 `inspect` 会报告 schema、行数、缺失值计数、稳定的源身份和 ID 健康度，但不会打印
 cell value 或原始 ID。对于 CSV 和 Parquet，它还会返回可编辑的 preparation recipe
 模板和 `prepare-plan` 下一步；对于 JSONL，文件就绪时会建议初始化 workspace。
+
+CSV 和 flat Parquet 已是原生 inspect 与确定性 prepare 输入。任务级事务 workspace
+当前以 keyed JSONL 为核心，因此表格数据会先准备为 JSONL 再进入变更控制。XLSX 与
+数据库、Hive、Spark 直连 adapter 尚未实现。
 
 无需创建 workspace，也能比较两个 keyed JSONL revision：
 
@@ -225,28 +239,27 @@ Agent 修改文件后，冻结并审查精确候选：
 
 ```bash
 datajig changeset-stage --change chg_...
-datajig check --change chg_... --changeset changeset_...
+datajig check
 ```
 
-常见的单任务 workspace 无需复制长身份：
+当且仅当当前 dataset、adapter 与 HEAD 对应唯一 declaration 和 staged candidate 时，
+`check`、`plan`、`status`、`seal` 会自动解析上下文；没有候选或存在歧义时拒绝猜测。
+需要从多个候选中选择时仍可显式使用完整 ID 或别名：
 
 ```bash
 datajig check --change @active --changeset @latest
 ```
 
-只有当前 dataset、adapter 与 HEAD 恰好匹配唯一 declaration 和 staged candidate
-时，这两个别名才会解析；存在歧义时 DataJig 会拒绝猜测。若省略参数，错误会在可
-确定时直接给出活跃身份，并附带可执行的 `next_actions`。
-
 Workspace 工作流命令会返回带 `decision` 和完整参数的 `next_actions`。Agent
-可以按返回动作继续查看 finding、修复并重新 stage，或接受当前 revision：
+可以按返回动作继续查看 finding、修复并重新 stage，或接受当前 revision。检查失败
+时会直接返回确定性 remediation plan 和有界 findings 查询的 argv 数组；不会猜测
+业务值，也不会静默应用 patch：
 
 ```bash
+datajig plan
 datajig findings .datajig/latest.review.json --offset 0 --limit 50
 
 datajig seal \
-  --change chg_... \
-  --changeset changeset_... \
   --accept-report review_... \
   --message "Accept normalized metadata"
 ```
@@ -360,6 +373,10 @@ Split 权重使用整数万分比：重复传入 `--split NAME=WEIGHT`，每个�
 且总和必须恰好等于 `10000`。`export --help` 和 `capabilities` 都会直接暴露这一
 契约与完整示例。参数不合法时会返回结构化修复建议和可执行的 `next_actions`，
 Agent 不需要靠反复试错推断语法。
+
+`--max-shard-records` 可从 `1` 开始设置，最后一个 shard 可以少于目标记录数。
+`--max-shard-bytes` 是从 `1` byte 开始的软目标：若一条合法记录本身超过目标，它会
+独占一个 shard。独立的 16 MiB JSONL 单行安全上限保持不变。
 
 任意可达且保留了内容的历史 revision 都能直接重建训练包；即使工作文件已被
 修改、移动或删除也不受影响：
@@ -521,8 +538,10 @@ datajig agent-skill --output .agents/skills/datajig/SKILL.md
 | Python、PyTorch、Hugging Face 验证消费 | 已支持 |
 | ImageFolder 语义审查与 HTML 报告 | 已支持 |
 | 通用目录 snapshot | 已支持 |
+| 可运行的端到端 tutorial | Linux、macOS 已支持 |
 | Linux x86_64/aarch64、macOS x86_64/arm64 wheel | 已发布 |
-| Windows workspace 写入 | 暂未支持 |
+| Windows 通过 WSL 使用 | 使用 Linux wheel 即可 |
+| Windows 原生 workspace 写入 | 暂未支持 |
 | S3/GCS/Azure、Oxen 与 DVC source adapter | 计划中 |
 | 自动训练编排 | 不在产品边界内 |
 
@@ -571,12 +590,9 @@ datajig capabilities
 DataJig 将成为 Agent 与数据之间的默认控制层：
 
 1. Arrow batch 执行、join、全数据集数值变换与多记录 patch set；
-2. 自带证明的训练消费 receipt；
-3. 一条命令安装 Agent Skill、hook 与 CI；
-4. 对接 S3/GCS/Azure、Oxen、DVC 与更多数据集 Hub 的 revision adapter。
+2. XLSX 与数据库快照 adapter，随后接入 Spark/Hive manifest；
+3. 对接 S3/GCS/Azure、Oxen、DVC 与更多数据集 Hub 的 revision adapter；
+4. Windows 原生文件系统语义与 wheel。
 
 目标很简单：Agent 永远知道自己改了什么，能证明审查了什么，能够安全恢复，
 并把可验证的输入交给训练代码。
-
-系统边界见[架构说明](ARCHITECTURE.md)，已交付、近期与后续能力划分见
-[路线图](ROADMAP.md)。

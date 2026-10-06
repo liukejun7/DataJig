@@ -23,9 +23,9 @@ pub const MAX_TRAINING_BUNDLE_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TRAINING_SPLITS: usize = 16;
 pub const MAX_TRAINING_SHARDS: usize = 4_096;
 pub const MAX_TRAINING_SEED_BYTES: usize = 256;
-pub const MIN_TRAINING_SHARD_RECORDS: usize = 100;
+pub const MIN_TRAINING_SHARD_RECORDS: usize = 1;
 pub const MAX_TRAINING_SHARD_RECORDS: usize = crate::MAX_JSONL_DIFF_RECORDS;
-pub const MIN_TRAINING_SHARD_BYTES: u64 = MAX_JSONL_LINE_BYTES as u64 + 1;
+pub const MIN_TRAINING_SHARD_BYTES: u64 = 1;
 pub const MAX_TRAINING_SHARD_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_TRAINING_SHARD_RECORDS: usize = 10_000;
 pub const DEFAULT_TRAINING_SHARD_BYTES: u64 = 256 * 1024 * 1024;
@@ -511,7 +511,7 @@ impl TrainingBundleManifest {
                 || shard.records == 0
                 || shard.records > self.config.max_shard_records
                 || shard.bytes == 0
-                || shard.bytes > self.config.max_shard_bytes
+                || (shard.bytes > self.config.max_shard_bytes && shard.records != 1)
             {
                 bail!("training bundle contains an invalid shard descriptor");
             }
