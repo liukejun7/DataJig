@@ -137,6 +137,7 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
 
         self.assertIn("datajig tutorial", workflow)
         self.assertIn("export-info", workflow)
+        self.assertGreaterEqual(workflow.count("--only-binary=:all:"), 2)
 
     def test_publish_automatically_attaches_every_wheel_to_the_release(self) -> None:
         workflow = (
