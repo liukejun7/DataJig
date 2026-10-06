@@ -100,35 +100,43 @@ fn staging_rejects_symlinks_and_enforces_streamed_limits() {
 
     let mut row_limits = TransformLimits::v1();
     row_limits.source_rows = 1;
-    assert!(
-        stage_transform_sources(
-            &[TransformInputSpec::new(
-                "events".into(),
-                source.clone(),
-                TransformSourceFormat::Jsonl
-            )
-            .unwrap()],
-            &sandbox,
-            &row_limits,
+    let row_error = stage_transform_sources(
+        &[TransformInputSpec::new(
+            "events".into(),
+            source.clone(),
+            TransformSourceFormat::Jsonl,
         )
-        .is_err()
+        .unwrap()],
+        &sandbox,
+        &row_limits,
+    )
+    .unwrap_err();
+    assert!(
+        row_error
+            .to_string()
+            .contains("at least 2 rows > limit 1 row"),
+        "{row_error}"
     );
     assert_eq!(0, fs::read_dir(&sandbox).unwrap().count());
 
     let mut byte_limits = TransformLimits::v1();
     byte_limits.source_bytes = 4;
-    assert!(
-        stage_transform_sources(
-            &[TransformInputSpec::new(
-                "events".into(),
-                source.clone(),
-                TransformSourceFormat::Jsonl
-            )
-            .unwrap()],
-            &sandbox,
-            &byte_limits,
+    let byte_error = stage_transform_sources(
+        &[TransformInputSpec::new(
+            "events".into(),
+            source.clone(),
+            TransformSourceFormat::Jsonl,
         )
-        .is_err()
+        .unwrap()],
+        &sandbox,
+        &byte_limits,
+    )
+    .unwrap_err();
+    assert!(
+        byte_error
+            .to_string()
+            .contains("at least 5 bytes > limit 4 bytes"),
+        "{byte_error}"
     );
     assert_eq!(0, fs::read_dir(&sandbox).unwrap().count());
 
@@ -280,6 +288,7 @@ fn provider_process_rejects_malformed_mismatched_oversized_and_timeout() {
             .downcast_ref::<TransformProviderTimeoutError>()
             .is_some()
     );
+    assert!(error.to_string().contains("limit 0.05 seconds"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(1));
     let _ = fs::remove_dir_all(fixture.root);
 }

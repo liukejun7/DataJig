@@ -438,7 +438,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(raw_args)
     except CliArgumentError as exc:
         if raw_args and (raw_args[0] in AGENT_COMMANDS or raw_args[0] == "pipeline"):
-            _print_agent_error("INVALID_ARGUMENT", str(exc))
+            _print_agent_error("INVALID_ARGUMENT", str(exc), command=raw_args[0])
         else:
             print(f"datajig: {exc}", file=sys.stderr)
         return 2
@@ -593,7 +593,11 @@ def _print_pipeline_error(exc: object) -> None:
     error.update(exc.details)
     print(
         json.dumps(
-            {"agent_api_version": 1, "error": error},
+            {
+                "agent_api_version": 1,
+                "error": error,
+                "next_actions": [{"command": "pipeline", "args": ["--help"]}],
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -646,10 +650,12 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
     try:
         completed = run_native(raw_args)
     except TransformProviderUnavailableError as exc:
-        _print_agent_error(exc.code, str(exc))
+        _print_agent_error(exc.code, str(exc), command=raw_args[0] if raw_args else None)
         return 2
     except NativeBackendUnavailableError as exc:
-        _print_agent_error("NATIVE_BACKEND_UNAVAILABLE", str(exc))
+        _print_agent_error(
+            "NATIVE_BACKEND_UNAVAILABLE", str(exc), command=raw_args[0] if raw_args else None
+        )
         return 2
     stdout = completed.stdout
     if completed.returncode == 0 and raw_args and raw_args[0] == "status":
@@ -669,6 +675,13 @@ def _augment_capabilities_with_pipeline(serialized: str) -> str:
         payload["pipeline_plan_schema_versions"] = [1]
         payload["pipeline_receipt_schema_versions"] = [1]
         payload["pipeline_lineage_schema_versions"] = [1]
+        payload["artifact_file_shape"] = "flat"
+        payload["cli_response_shape"] = "agent_envelope_v1"
+        payload["delivery_update"] = {
+            "atomic_exchange_platforms": ["linux", "macos"],
+            "filesystem_preflight": True,
+            "fallback": "none",
+        }
         features = payload.get("features")
         if isinstance(features, dict):
             features.update(
@@ -676,6 +689,7 @@ def _augment_capabilities_with_pipeline(serialized: str) -> str:
                     "deterministic_pipeline_plans": True,
                     "recoverable_pipeline": True,
                     "pipeline_lineage": True,
+                    "fixed_delivery_updates": True,
                 }
             )
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
@@ -714,10 +728,14 @@ def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> s
         return serialized
 
 
-def _print_agent_error(code: str, message: str) -> None:
+def _print_agent_error(code: str, message: str, *, command: str | None = None) -> None:
+    next_actions = []
+    if command:
+        next_actions.append({"command": command, "args": ["--help"]})
     payload = {
         "agent_api_version": 1,
         "error": {"code": code, "message": message, "retryable": False},
+        "next_actions": next_actions,
     }
     print(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),

@@ -62,11 +62,17 @@ impl fmt::Display for TransformProviderExecutionError {
 impl Error for TransformProviderExecutionError {}
 
 #[derive(Debug)]
-pub struct TransformProviderTimeoutError;
+pub struct TransformProviderTimeoutError {
+    limit: Duration,
+}
 
 impl fmt::Display for TransformProviderTimeoutError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("transform provider exceeded its execution deadline")
+        write!(
+            formatter,
+            "transform provider execution exceeded limit {} seconds",
+            duration_seconds(self.limit)
+        )
     }
 }
 
@@ -153,14 +159,19 @@ pub fn stage_transform_sources(
         );
         let destination = sandbox.join(name);
         let remaining_bytes = limits.source_bytes.saturating_sub(total_bytes);
-        let (bytes, content_id, original) =
-            match stage_regular_file(&input.path, &destination, remaining_bytes) {
-                Ok(result) => result,
-                Err(error) => {
-                    cleanup_staged(&staged, Some(&destination));
-                    return Err(error);
-                }
-            };
+        let (bytes, content_id, original) = match stage_regular_file(
+            &input.path,
+            &destination,
+            remaining_bytes,
+            total_bytes,
+            limits.source_bytes,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                cleanup_staged(&staged, Some(&destination));
+                return Err(error);
+            }
+        };
         let prepared = (|| -> Result<(u64, u64, TransformSource)> {
             let next_bytes = total_bytes
                 .checked_add(bytes)
@@ -434,7 +445,10 @@ pub fn probe_transform_provider(
             let _ = stdin_writer.join();
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            return Err(TransformProviderTimeoutError.into());
+            return Err(TransformProviderTimeoutError {
+                limit: Duration::from_secs(5),
+            }
+            .into());
         }
         thread::sleep(Duration::from_millis(5));
     };
@@ -507,7 +521,7 @@ pub fn execute_transform_provider(
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             cleanup_candidate(request);
-            return Err(TransformProviderTimeoutError.into());
+            return Err(TransformProviderTimeoutError { limit: timeout }.into());
         }
         thread::sleep(Duration::from_millis(5));
     };
@@ -593,10 +607,18 @@ fn stage_regular_file(
     source: &Path,
     destination: &Path,
     maximum_bytes: u64,
+    bytes_before: u64,
+    total_limit: u64,
 ) -> Result<(u64, String, PathBuf)> {
     #[cfg(not(unix))]
     {
-        let _ = (source, destination, maximum_bytes);
+        let _ = (
+            source,
+            destination,
+            maximum_bytes,
+            bytes_before,
+            total_limit,
+        );
         anyhow::bail!("transform staging currently requires Unix")
     }
     #[cfg(unix)]
@@ -631,7 +653,8 @@ fn stage_regular_file(
                 drop(destination_file);
                 let _ = fs::remove_file(destination);
                 return Err(InvalidArgumentError::new(format!(
-                    "transform sources exceed {maximum_bytes} remaining bytes"
+                    "transform sources contain at least {} bytes > limit {total_limit} bytes",
+                    bytes_before.saturating_add(maximum_bytes).saturating_add(1)
                 ))
                 .into());
             }
@@ -724,9 +747,23 @@ impl TabularConsumer for RowCounter {
         }
         self.rows += 1;
         if self.rows > self.maximum {
-            return Err(InvalidArgumentError::new("transform source row limit exceeded").into());
+            return Err(InvalidArgumentError::new(format!(
+                "transform sources contain at least {} rows > limit {} {}",
+                self.rows,
+                self.maximum,
+                if self.maximum == 1 { "row" } else { "rows" }
+            ))
+            .into());
         }
         Ok(())
+    }
+}
+
+fn duration_seconds(duration: Duration) -> String {
+    if duration.subsec_nanos() == 0 {
+        duration.as_secs().to_string()
+    } else {
+        duration.as_secs_f64().to_string()
     }
 }
 

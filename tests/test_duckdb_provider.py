@@ -64,7 +64,7 @@ class DuckDbProviderTest(unittest.TestCase):
         self.assertEqual("datajig-duckdb-python", identity["implementation"])
         self.assertEqual("1.5.6", identity["duckdb_version"])
         self.assertEqual(1, identity["serializer_version"])
-        self.assertEqual(1, identity["source_loader_policy_version"])
+        self.assertEqual(2, identity["source_loader_policy_version"])
         self.assertEqual(1, identity["sql_policy_version"])
         payload = {key: value for key, value in identity.items() if key != "provider_id"}
         encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
@@ -145,6 +145,56 @@ class DuckDbProviderTest(unittest.TestCase):
                 provider._load_sources(
                     connection, {"sources": [_source("nested", nested, "jsonl", 1)]}
                 )
+            connection.close()
+
+    def test_csv_loader_accepts_mixed_record_endings_and_quoted_newlines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "mixed.csv"
+            source.write_bytes(
+                b'id,text\r\n1,"hello\nworld"\r\n2,plain\n3,"crlf\r\ninside"\r\n'
+            )
+            connection = duckdb.connect(":memory:")
+
+            provider._load_sources(
+                connection, {"sources": [_source("mixed", source, "csv", 3)]}
+            )
+
+            self.assertEqual(
+                [("1", "hello\nworld"), ("2", "plain"), ("3", "crlf\r\ninside")],
+                connection.execute("SELECT id, text FROM mixed ORDER BY id").fetchall(),
+            )
+            connection.close()
+
+    def test_csv_loader_reports_real_line_numbers_without_leaking_staged_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "private-name.csv"
+            source.write_bytes(b"id,value\n1,\xff\n")
+            connection = duckdb.connect(":memory:")
+
+            with self.assertRaises(provider.ProviderError) as raised:
+                provider._load_sources(
+                    connection, {"sources": [_source("events", source, "csv", 1)]}
+                )
+
+            self.assertEqual("SOURCE_LOAD_FAILED", raised.exception.code)
+            self.assertIn("source 'events' at line 2", raised.exception.message)
+            self.assertNotIn(str(source), raised.exception.message)
+            connection.close()
+
+    def test_csv_loader_does_not_invent_a_line_number(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "unclosed.csv"
+            source.write_bytes(b'id,value\n1,"never closes\n2,x\n')
+            connection = duckdb.connect(":memory:")
+
+            with self.assertRaises(provider.ProviderError) as raised:
+                provider._load_sources(
+                    connection, {"sources": [_source("events", source, "csv", 2)]}
+                )
+
+            self.assertIn("source 'events'", raised.exception.message)
+            self.assertIn("did not report a line number", raised.exception.message)
+            self.assertNotRegex(raised.exception.message, r"at line \d+")
             connection.close()
 
     def test_lockdown_is_verified_before_user_query(self) -> None:

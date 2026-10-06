@@ -223,7 +223,7 @@ fn transform_provider_schema() -> Value {
             "protocol":{"const":"datajig.transform-provider.v1"}, "protocol_version":{"const":1},
             "implementation":{"const":"datajig-duckdb-python"}, "implementation_version":nonempty_string(),
             "duckdb_version":nonempty_string(), "python_implementation":nonempty_string(), "python_version":nonempty_string(),
-            "serializer_version":{"const":1}, "source_loader_policy_version":{"const":1}, "sql_policy_version":{"const":1},
+            "serializer_version":{"const":1}, "source_loader_policy_version":{"const":2}, "sql_policy_version":{"const":1},
             "provider_id":content_id_schema("provider")
         }),
     )

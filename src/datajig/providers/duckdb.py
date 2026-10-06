@@ -23,7 +23,7 @@ PROTOCOL_VERSION = 1
 IMPLEMENTATION = "datajig-duckdb-python"
 DUCKDB_VERSION = "1.5.6"
 SERIALIZER_VERSION = 1
-SOURCE_LOADER_POLICY_VERSION = 1
+SOURCE_LOADER_POLICY_VERSION = 2
 SQL_POLICY_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 _ALIAS = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
@@ -177,7 +177,7 @@ def _load_sources(connection: _Connection, request: Mapping[str, object]) -> Non
                 connection.execute(
                     f"CREATE TEMP TABLE {identifier} AS SELECT * FROM read_csv(?, "
                     "header=true, all_varchar=true, delim=',', quote='\"', escape='\"', "
-                    "strict_mode=true, encoding='utf-8')",
+                    "strict_mode=false, ignore_errors=false, encoding='utf-8')",
                     [str(path)],
                 )
             elif source_format == "parquet":
@@ -199,13 +199,26 @@ def _load_sources(connection: _Connection, request: Mapping[str, object]) -> Non
         except ProviderError:
             raise
         except Exception as error:
-            raise ProviderError(
-                "SOURCE_LOAD_FAILED",
-                "DuckDB could not load a staged transform source.",
-                "Verify the declared format, encoding, header, and scalar values.",
-            ) from error
+            raise _source_load_error(alias, source_format, error) from error
         if observed_rows != expected_rows:
             _fail("SOURCE_DRIFT", "A staged transform source row count changed before execution.")
+
+
+def _source_load_error(alias: str, source_format: str, error: Exception) -> ProviderError:
+    message = f"DuckDB could not load {source_format.upper()} source '{alias}'"
+    if source_format == "csv":
+        match = re.search(r"(?:CSV Error on Line:|Line Number:)\s*(\d+)", str(error))
+        if match is None:
+            message += "; the parser did not report a line number."
+        else:
+            message += f" at line {match.group(1)}."
+    else:
+        message += "."
+    return ProviderError(
+        "SOURCE_LOAD_FAILED",
+        message,
+        "Verify the declared format, UTF-8 encoding, header, quoting, and scalar values.",
+    )
 
 
 def _configure_runtime(

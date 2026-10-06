@@ -229,7 +229,7 @@ impl TransformProviderIdentity {
             python_implementation,
             python_version,
             serializer_version: 1,
-            source_loader_policy_version: 1,
+            source_loader_policy_version: 2,
             sql_policy_version: 1,
             provider_id: String::new(),
         };
@@ -262,7 +262,7 @@ impl TransformProviderIdentity {
             || self.protocol_version != TRANSFORM_PROVIDER_PROTOCOL_VERSION
             || self.implementation != "datajig-duckdb-python"
             || self.serializer_version != 1
-            || self.source_loader_policy_version != 1
+            || self.source_loader_policy_version != 2
             || self.sql_policy_version != 1
             || self.provider_id != self.compute_id()?
         {

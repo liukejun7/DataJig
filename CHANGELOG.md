@@ -3,6 +3,34 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.1] - 2026-10-06
+
+### Added
+
+- Safe fixed-path delivery evolution for eligible update pipelines using native
+  atomic directory exchange, target-filesystem preflight, retained verified
+  backups, and strictly forward crash recovery after HEAD advances.
+- Explicit capability fields for artifact-file shape, CLI response envelope,
+  and atomic delivery-update support.
+
+### Changed
+
+- Preparation help now includes a minimal recipe and points directly to the
+  complete `artifact-schema prepare-recipe` contract.
+- Transform row, byte, field, and wall-time failures report the observed value
+  (or a bounded lower estimate) together with the configured limit.
+- Agent-facing error responses consistently include a `next_actions` array.
+
+### Fixed
+
+- DuckDB CSV transforms accept mixed CRLF/LF record endings without rewriting
+  source bytes, including quoted fields with embedded newlines.
+- CSV load failures retain real parser line numbers when available, identify
+  the source alias, and never invent a location when DuckDB provides none.
+- Preparation recipe identity failures now identify the invalid namespace,
+  kind, schema version, or output format instead of returning one opaque error.
+- README badges no longer depend on private GitHub repository metadata.
+
 ## [0.8.0] - 2026-10-06
 
 ### Added
