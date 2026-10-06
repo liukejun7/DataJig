@@ -6,6 +6,10 @@ without weakening review, reproducibility, or recovery.
 
 ## Shipped
 
+- one-YAML local Pipelines with deterministic plans, create/update/no-op modes,
+  detached revision preparation, HEAD compare-and-swap, recoverable delivery,
+  bound training-consumption plans, lineage, and explicit crash resume;
+
 - privacy-safe inspection for keyed JSONL, CSV, and flat Parquet;
 - deterministic CSV/Parquet/JSONL-to-JSONL preparation with plan/apply receipts,
   including recursive local datasets and ordered multi-file inputs bound to

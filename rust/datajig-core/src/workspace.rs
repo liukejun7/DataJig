@@ -143,6 +143,54 @@ pub fn export_training_bundle_with_view_at_revision(
     max_shard_records: usize,
     max_shard_bytes: u64,
 ) -> Result<TrainingBundleArtifact> {
+    export_training_bundle_with_view_at_revision_internal(
+        state,
+        output,
+        view_path,
+        revision_id,
+        false,
+        seed,
+        split_specs,
+        max_shard_records,
+        max_shard_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn export_training_bundle_with_view_at_detached_revision(
+    state: &Path,
+    output: &Path,
+    revision_id: &str,
+    seed: String,
+    split_specs: &[String],
+    max_shard_records: usize,
+    max_shard_bytes: u64,
+) -> Result<TrainingBundleArtifact> {
+    export_training_bundle_with_view_at_revision_internal(
+        state,
+        output,
+        None,
+        Some(revision_id),
+        true,
+        seed,
+        split_specs,
+        max_shard_records,
+        max_shard_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_training_bundle_with_view_at_revision_internal(
+    state: &Path,
+    output: &Path,
+    view_path: Option<&Path>,
+    revision_id: Option<&str>,
+    allow_detached: bool,
+    seed: String,
+    split_specs: &[String],
+    max_shard_records: usize,
+    max_shard_bytes: u64,
+) -> Result<TrainingBundleArtifact> {
     let config = TrainingExportConfig::new(seed, split_specs, max_shard_records, max_shard_bytes)?;
     let recipe = view_path.map(load_subset_recipe_file).transpose()?;
     let (state_dir, workspace) = if revision_id.is_some() {
@@ -175,8 +223,11 @@ pub fn export_training_bundle_with_view_at_revision(
     }
     let (dataset_id, head, baseline, source) = if let Some(revision_id) = revision_id {
         let store = WorkspaceStore::open(&state_dir)?;
-        let (revision, bundle) =
-            resolve_reachable_record_revision(&store, &workspace, revision_id)?;
+        let (revision, bundle) = if allow_detached {
+            resolve_detached_record_revision(&store, &workspace, revision_id)?
+        } else {
+            resolve_reachable_record_revision(&store, &workspace, revision_id)?
+        };
         let source = store
             .verified_jsonl_blob_path(revision.dataset_content_id(), bundle.state().byte_count())?;
         (workspace.dataset_id.clone(), revision, bundle, source)
@@ -227,6 +278,30 @@ pub fn export_training_bundle_with_view_at_revision(
         .into());
     }
     materialize_training_bundle(&source, &resolved_output, &binding, view.as_ref(), &config)
+}
+
+fn resolve_detached_record_revision(
+    store: &WorkspaceStore,
+    workspace: &WorkspaceConfig,
+    revision_id: &str,
+) -> Result<(DatasetRevision, JsonlRecordStateBundle)> {
+    let refs = store.load_refs()?;
+    let head = store.load_revision(refs.head())?;
+    validate_workspace_identity(store, workspace, &head)?;
+    let revision = store.load_revision(revision_id)?;
+    if revision.parent() != Some(refs.head()) || revision.adapter() != "jsonl" {
+        return Err(InvalidArgumentError::new(
+            "detached export requires a keyed JSONL revision directly based on current HEAD",
+        )
+        .into());
+    }
+    let bundle = store.load_record_state_bundle(revision.state_id())?;
+    if bundle.state().dataset_content_id() != revision.dataset_content_id()
+        || bundle.state().id_field() != workspace.id_field().expect("validated JSONL workspace")
+    {
+        bail!("detached revision does not match the workspace record contract");
+    }
+    Ok((revision, bundle))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1639,6 +1714,11 @@ fn plan_jsonl_changeset(
     })
 }
 
+struct JsonlSealMode<'a> {
+    commit_head: bool,
+    source_receipt: Option<&'a Path>,
+}
+
 fn seal_jsonl_changeset(
     state_dir: &Path,
     workspace: &WorkspaceConfig,
@@ -1646,6 +1726,7 @@ fn seal_jsonl_changeset(
     accepted_report_id: Option<&str>,
     change_id: &str,
     changeset_id: &str,
+    mode: JsonlSealMode<'_>,
 ) -> Result<WorkspaceSealArtifact> {
     if message.is_empty() || message.len() > 4_096 {
         return Err(InvalidArgumentError::new("message must contain 1 to 4096 UTF-8 bytes").into());
@@ -1694,7 +1775,20 @@ fn seal_jsonl_changeset(
         }
         (_, Some(_), _) => bail!("accepted report does not match the latest workspace review"),
     };
-    let revision = DatasetRevision::new_record(
+    let transform_lineage = mode
+        .source_receipt
+        .map(|receipt_path| {
+            let receipt = crate::TransformReceipt::from_path(receipt_path)?;
+            crate::transform_workflow::verify_transform_receipt_snapshot(
+                receipt_path,
+                Path::new(receipt.output_path()),
+                Path::new(workspace.dataset_path()),
+                workspace.id_field().expect("validated JSONL workspace"),
+            )
+            .and_then(|verified| crate::TransformLineage::from_verified_receipt(&verified))
+        })
+        .transpose()?;
+    let revision = DatasetRevision::new_record_with_lineage(
         Some(context.head.revision_id().into()),
         context.candidate.state().record_state_id().into(),
         context.candidate.state().dataset_content_id().into(),
@@ -1705,6 +1799,7 @@ fn seal_jsonl_changeset(
             env!("CARGO_PKG_VERSION").into(),
             message.into(),
         )?,
+        transform_lineage,
         now_unix_ns()?,
     )?;
     let store = WorkspaceStore::open(state_dir)?;
@@ -1723,7 +1818,9 @@ fn seal_jsonl_changeset(
         )
         .into());
     }
-    store.compare_and_swap_head(Some(context.head.revision_id()), revision.revision_id())?;
+    if mode.commit_head {
+        store.compare_and_swap_head(Some(context.head.revision_id()), revision.revision_id())?;
+    }
     Ok(WorkspaceSealArtifact {
         accepted_report_id,
         baseline_inventory_id: None,
@@ -3508,6 +3605,10 @@ pub fn seal_changeset(
             accepted_report_id,
             change_id,
             changeset_id,
+            JsonlSealMode {
+                commit_head: true,
+                source_receipt: None,
+            },
         );
     }
     let context = load_changeset_context(state, change_id, changeset_id)?;
@@ -3533,6 +3634,80 @@ pub fn seal_changeset(
     artifact.change_id = Some(context.change.change_id().into());
     artifact.changeset_id = Some(context.changeset.changeset_id().into());
     Ok(artifact)
+}
+
+pub fn seal_changeset_detached(
+    state: &Path,
+    message: &str,
+    accepted_report_id: Option<&str>,
+    change_id: &str,
+    changeset_id: &str,
+    source_receipt: Option<&Path>,
+) -> Result<WorkspaceSealArtifact> {
+    let (state_dir, workspace) = load_workspace_compatible(state)?;
+    if workspace.adapter != "jsonl" {
+        return Err(
+            InvalidArgumentError::new("detached sealing requires a keyed JSONL workspace").into(),
+        );
+    }
+    seal_jsonl_changeset(
+        &state_dir,
+        &workspace,
+        message,
+        accepted_report_id,
+        change_id,
+        changeset_id,
+        JsonlSealMode {
+            commit_head: false,
+            source_receipt,
+        },
+    )
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkspaceHeadCasArtifact {
+    pub previous_revision_id: String,
+    pub revision_id: String,
+    pub state_dir: String,
+}
+
+pub fn compare_and_swap_workspace_head(
+    state: &Path,
+    expected_revision_id: &str,
+    revision_id: &str,
+) -> Result<WorkspaceHeadCasArtifact> {
+    let (state_dir, workspace) = load_workspace_without_live_dataset(state)?;
+    let store = WorkspaceStore::open(&state_dir)?;
+    let current = store.load_revision(store.load_refs()?.head())?;
+    validate_workspace_identity(&store, &workspace, &current)?;
+    if current.revision_id() != expected_revision_id {
+        return Err(ConcurrentModificationError::new(format!(
+            "workspace HEAD changed; expected {expected_revision_id}, found {}",
+            current.revision_id()
+        ))
+        .into());
+    }
+    let revision = store.load_revision(revision_id)?;
+    if revision.parent() != Some(expected_revision_id) || revision.adapter() != workspace.adapter {
+        return Err(InvalidArgumentError::new(
+            "new pipeline revision is not a direct child of the expected workspace HEAD",
+        )
+        .into());
+    }
+    if workspace.adapter == "jsonl" {
+        let bundle = store.load_record_state_bundle(revision.state_id())?;
+        if bundle.state().dataset_content_id() != revision.dataset_content_id()
+            || bundle.state().id_field() != workspace.id_field().expect("validated JSONL workspace")
+        {
+            bail!("new pipeline revision does not match the workspace record contract");
+        }
+    }
+    store.compare_and_swap_head(Some(expected_revision_id), revision_id)?;
+    Ok(WorkspaceHeadCasArtifact {
+        previous_revision_id: expected_revision_id.into(),
+        revision_id: revision_id.into(),
+        state_dir: path_text(&state_dir, "state directory")?,
+    })
 }
 
 pub fn plan_changeset(

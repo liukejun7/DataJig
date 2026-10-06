@@ -200,15 +200,18 @@ pub use workspace::{
     JsonlPatchApplyArtifact, JsonlPatchDraftArtifact, JsonlPatchUndoArtifact,
     MAX_REVISION_PAGE_SIZE, MAX_REVISION_TRAVERSAL, MAX_WORKSPACE_BYTES, MaterializeArtifact,
     RevisionPage, ViewCheckArtifact, WorkspaceArtifact, WorkspaceCheckArtifact,
-    WorkspacePlanArtifact, WorkspaceSealArtifact, WorkspaceStatusArtifact, apply_jsonl_patch,
-    begin_changeset, check_changeset, check_subset_view, check_workspace, draft_jsonl_patch,
+    WorkspaceHeadCasArtifact, WorkspacePlanArtifact, WorkspaceSealArtifact,
+    WorkspaceStatusArtifact, apply_jsonl_patch, begin_changeset, check_changeset,
+    check_subset_view, check_workspace, compare_and_swap_workspace_head, draft_jsonl_patch,
     export_training_bundle, export_training_bundle_with_view,
+    export_training_bundle_with_view_at_detached_revision,
     export_training_bundle_with_view_at_revision, initialize_jsonl_workspace,
     initialize_jsonl_workspace_with_policy, initialize_jsonl_workspace_with_receipt,
     initialize_workspace, is_patchable_quality_code, locate_changeset_finding,
     materialize_revision, plan_changeset, plan_workspace, preview_jsonl_patch,
     resolve_changeset_selectors, resolve_optional_changeset_context, revision_log, seal_changeset,
-    seal_workspace, stage_changeset, status_changeset, status_workspace, undo_jsonl_patch,
+    seal_changeset_detached, seal_workspace, stage_changeset, status_changeset, status_workspace,
+    undo_jsonl_patch,
 };
 pub use workspace_store::{WorkspaceLock, WorkspaceRefs, WorkspaceStore};
 

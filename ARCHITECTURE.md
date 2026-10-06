@@ -70,6 +70,26 @@ DataJig owns the behavior that must remain stable across engines:
 - provenance, receipts, and integrity verification;
 - sealed revisions, views, and training bundles.
 
+## Pipeline transaction boundary
+
+Pipeline plans contain normalized logical paths and content identities; machine
+absolute paths are execution bindings, not content identity. Apply takes the
+plan lock before the workspace lock, snapshots progress in a durable journal,
+and never resumes implicitly.
+
+For updates, DataJig validates the staged changeset and publishes its immutable
+revision without moving HEAD. It can therefore export and verify the bundle
+while the old revision remains current. Only then does a compare-and-swap move
+HEAD from the planned base to the prepared child. The delivery directory is
+renamed into place without a marker, path-bound consumer plans are generated at
+their final deployment paths, and the marker is written last. Protocol-aware
+readers treat a directory without that marker as invisible and recoverable.
+
+HEAD and delivery are deliberately a recoverable two-phase commit, not a claim
+of physical atomicity across resources. A crash after HEAD CAS is completed by
+`pipeline apply ... --resume`; a verified existing marker makes retries
+idempotent. Mutable journal state is never used as a success receipt.
+
 It deliberately integrates existing engines where replacement would add no
 trust value: Hugging Face transports source bytes, Parquet libraries decode
 columnar data, DuckDB executes bounded relational transforms, and PyTorch or

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datajig"
-version = "0.7.0"
+version = "0.8.0"
 description = "Agent-native data control plane for verified, versioned, training-ready datasets"
 readme = "PYPI.md"
 requires-python = ">=3.11"
