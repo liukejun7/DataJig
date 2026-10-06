@@ -120,6 +120,17 @@ class ConsumptionRun:
 
     def _publish_marker(self, shard: VerifiedShard) -> None:
         self._require_same_state()
+        lock_descriptor = os.open(
+            self._runtime.run_dir / ".lock", os.O_RDWR | os.O_NOFOLLOW
+        )
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            self._require_same_state()
+            self._publish_marker_locked(shard)
+        finally:
+            os.close(lock_descriptor)
+
+    def _publish_marker_locked(self, shard: VerifiedShard) -> None:
         marker = {
             "namespace": "datajig",
             "kind": "training_consumption_shard_marker",

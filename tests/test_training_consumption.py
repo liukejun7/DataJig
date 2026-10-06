@@ -125,6 +125,70 @@ class TrainingConsumptionTests(DataJigCliTestCase):
         self.assertEqual(2, len(list((run_dir / "shards").glob("*.json"))))
         self.assertTrue((run_dir / "datajig.consumed.json").is_file())
 
+    def test_finalization_waits_for_marker_publication_to_finish(self) -> None:
+        records = [{"id": f"row-{index:03}", "text": "x"} for index in range(101)]
+        plan, planned, inspected = self.create_consumption(
+            "marker-publication-lock", records=records
+        )
+        completed = SimpleNamespace(returncode=0, stdout=json.dumps(inspected), stderr="")
+        with patch("datajig.consumption.run_native", return_value=completed):
+            run = open_consumption(plan, accept_plan=planned["consumption_plan_id"])
+
+        first_shard, second_shard = run._runtime.shards
+        run._publish_marker(second_shard)
+        marker_linked = threading.Event()
+        release_unlink = threading.Event()
+        finalizer_started = threading.Event()
+        finalizer_finished = threading.Event()
+        failures: list[BaseException] = []
+        original_unlink = Path.unlink
+        marker_prefix = f".{first_shard.shard_id}.json."
+
+        def delayed_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+            if (
+                path.parent == Path(inspected["artifact"]["run_dir"]) / "shards"
+                and path.name.startswith(marker_prefix)
+                and path.name.endswith(".tmp")
+            ):
+                marker_linked.set()
+                if not release_unlink.wait(timeout=5):
+                    raise TimeoutError("marker publication was not released")
+            original_unlink(path, *args, **kwargs)
+
+        def publish_marker() -> None:
+            try:
+                run._publish_marker(first_shard)
+            except BaseException as exc:
+                failures.append(exc)
+
+        def finalize() -> None:
+            finalizer_started.set()
+            try:
+                run._try_finalize()
+            except BaseException as exc:
+                failures.append(exc)
+            finally:
+                finalizer_finished.set()
+
+        publisher = threading.Thread(target=publish_marker)
+        finalizer = threading.Thread(target=finalize)
+        with patch.object(Path, "unlink", new=delayed_unlink):
+            publisher.start()
+            self.assertTrue(marker_linked.wait(timeout=5))
+            finalizer.start()
+            self.assertTrue(finalizer_started.wait(timeout=5))
+            finished_before_publication = finalizer_finished.wait(timeout=0.2)
+            release_unlink.set()
+            publisher.join(timeout=5)
+            finalizer.join(timeout=5)
+
+        self.assertFalse(finished_before_publication)
+        self.assertFalse(publisher.is_alive())
+        self.assertFalse(finalizer.is_alive())
+        self.assertEqual([], failures)
+        run_dir = Path(inspected["artifact"]["run_dir"])
+        self.assertTrue((run_dir / "datajig.consumed.json").is_file())
+
     def test_forged_symlinked_or_unknown_run_state_fails_closed(self) -> None:
         with self.consumption("unknown-state") as (run, runtime):
             (Path(runtime["run_dir"]) / "rogue.json").write_text("{}")
