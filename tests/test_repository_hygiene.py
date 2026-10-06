@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = REPOSITORY_ROOT / "tools" / "check_repository_hygiene.py"
-FORBIDDEN_EMAIL = "dawnkisser" + "@dr.com"
+FORBIDDEN_EMAIL = bytes.fromhex("6461776e6b69737365724064722e636f6d").decode("ascii")
 
 
 class ReleaseRepositoryHygieneTests(unittest.TestCase):
@@ -18,8 +18,8 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             (REPOSITORY_ROOT / "rust" / "datajig-core" / "Cargo.toml").read_text()
         )
 
-        self.assertEqual("0.6.1", metadata["project"]["version"])
-        self.assertEqual("0.6.1", rust_metadata["package"]["version"])
+        self.assertEqual("0.7.0", metadata["project"]["version"])
+        self.assertEqual("0.7.0", rust_metadata["package"]["version"])
         self.assertEqual("PYPI.md", metadata["project"]["readme"])
         self.assertEqual(
             [{"name": "Kejun Liu", "email": "liukj7@gmail.com"}],
@@ -60,7 +60,7 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         chinese_readme = (REPOSITORY_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
 
         for readme in (english_readme, chinese_readme):
-            self.assertIn('src="assets/datajig-hero.png"', readme)
+            self.assertIn('src="./assets/datajig-hero.png"', readme)
             self.assertNotIn("raw.githubusercontent.com", readme)
 
     def test_workflows_pin_node_24_official_actions(self) -> None:
@@ -102,9 +102,13 @@ def forbidden_public_path(path: str) -> bool:
             ".ruff_cache",
             ".superpowers",
             ".venv",
+            ".codex",
+            "artifacts",
             "build",
             "dist",
+            "doc",
             "docs",
+            "htmlcov",
         }
     ) or any(
         token in lowered

@@ -35,7 +35,14 @@ class DataJigArgumentParser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     from datajig.models import Severity
 
-    parser = DataJigArgumentParser(prog="datajig")
+    parser = DataJigArgumentParser(
+        prog="datajig",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Lifecycle: prepare/import -> transform -> version -> review/seal -> "
+            "export -> consume"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_tool_version()}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     compare_parser = subparsers.add_parser("compare", help="compare two dataset snapshots")
@@ -186,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     changeset_stage_parser.add_argument("--change", required=True)
 
     plan_parser = subparsers.add_parser(
-        "plan", help="turn the latest review into an Agent action plan"
+        "review-plan", help="turn the latest review into an Agent action plan"
     )
     plan_parser.add_argument("--state", type=Path, default=Path(".datajig"))
     plan_parser.add_argument("--change")
@@ -272,7 +279,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare_plan_parser = subparsers.add_parser(
         "prepare-plan",
-        help="plan deterministic CSV/Parquet/JSONL preparation from a file or import receipt",
+        help=(
+            "plan deterministic CSV/Parquet/JSONL preparation from a file, directory, "
+            "or import receipt"
+        ),
     )
     prepare_plan_parser.add_argument("source", type=Path)
     prepare_plan_parser.add_argument("--recipe", type=Path, required=True)

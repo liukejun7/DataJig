@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
-pub const TRANSFORM_PLAN_SCHEMA_VERSION: u8 = 1;
+pub const TRANSFORM_PLAN_SCHEMA_VERSION: u8 = 2;
 pub const TRANSFORM_RECEIPT_SCHEMA_VERSION: u8 = 1;
 pub const TRANSFORM_PROVIDER_PROTOCOL_VERSION: u8 = 1;
 pub const MAX_TRANSFORM_INPUTS: usize = 16;
@@ -289,7 +289,6 @@ pub struct TransformExpectedOutput {
 #[derive(Clone, Debug)]
 pub struct TransformPlanInput {
     pub sources: Vec<TransformSource>,
-    pub sql_path: String,
     pub sql: String,
     pub parameters: Vec<Value>,
     pub id_field: String,
@@ -307,7 +306,6 @@ pub struct TransformPlan {
     schema_version: u8,
     plan_id: String,
     sources: Vec<TransformSource>,
-    sql_path: String,
     sql: String,
     sql_content_id: String,
     parameters: Vec<Value>,
@@ -324,7 +322,6 @@ pub struct TransformPlan {
 struct TransformPlanIdentity<'a> {
     schema_version: u8,
     sources: &'a [TransformSource],
-    sql_path: &'a str,
     sql: &'a str,
     sql_content_id: &'a str,
     parameters: &'a [Value],
@@ -356,7 +353,6 @@ impl TransformPlan {
             schema_version: TRANSFORM_PLAN_SCHEMA_VERSION,
             plan_id: String::new(),
             sources: input.sources,
-            sql_path: input.sql_path,
             sql: input.sql,
             sql_content_id,
             parameters: input.parameters,
@@ -457,8 +453,7 @@ impl TransformPlan {
         {
             return Err(InvalidArgumentError::new("transform query identity is invalid").into());
         }
-        if self.sql_path.is_empty()
-            || self.id_field.is_empty()
+        if self.id_field.is_empty()
             || self.output_path.is_empty()
             || self.expected.schema.is_empty()
             || self.expected.schema.len() > self.limits.output_fields
@@ -476,7 +471,6 @@ impl TransformPlan {
         TransformPlanIdentity {
             schema_version: self.schema_version,
             sources: &self.sources,
-            sql_path: &self.sql_path,
             sql: &self.sql,
             sql_content_id: &self.sql_content_id,
             parameters: &self.parameters,
@@ -493,7 +487,7 @@ impl TransformPlan {
     fn compute_id(&self) -> Result<String> {
         Ok(blake3_content_id(
             "xform",
-            b"datajig-transform-plan-v1\0",
+            b"datajig-transform-plan-v2\0",
             &serde_json::to_vec(&self.identity())?,
         ))
     }
@@ -520,10 +514,6 @@ impl TransformPlan {
 
     pub fn sources(&self) -> &[TransformSource] {
         &self.sources
-    }
-
-    pub fn sql_path(&self) -> &str {
-        &self.sql_path
     }
 
     pub fn sql(&self) -> &str {

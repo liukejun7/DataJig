@@ -46,8 +46,14 @@ class CliDiscoveryTests(unittest.TestCase):
         export = self.run_help("export")
         self.assertEqual(0, export.returncode, export.stderr)
         self.assertIn("NAME=WEIGHT", export.stdout)
-        self.assertIn("basis-point", export.stdout)
-        self.assertIn("--split train=7000 --split val=2000 --split test=1000", export.stdout)
+        self.assertIn("relative integer weight", export.stdout)
+        self.assertIn("--split train=7 --split val=2 --split test=1", export.stdout)
+
+        transform = self.run_help("transform-plan")
+        self.assertEqual(0, transform.returncode, transform.stderr)
+        self.assertIn("--sql <SQL>", transform.stdout)
+        self.assertIn("--sql-file <SQL_FILE>", transform.stdout)
+        self.assertIn("CSV columns are strings", transform.stdout)
 
     def test_top_level_help_lists_transform_workflow(self) -> None:
         completed = self.run_help("")
@@ -55,6 +61,12 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("transform-plan", completed.stdout)
         self.assertIn("transform-apply", completed.stdout)
         self.assertIn("transform-info", completed.stdout)
+        self.assertIn("review-plan", completed.stdout)
+        self.assertNotRegex(completed.stdout, r"(?m)^  plan\s")
+        self.assertIn(
+            "prepare/import -> transform -> version -> review/seal -> export -> consume",
+            completed.stdout,
+        )
 
     def test_top_level_version_matches_installed_package_metadata(self) -> None:
         environment = os.environ.copy()

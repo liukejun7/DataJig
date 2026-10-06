@@ -77,7 +77,6 @@ fn transform_examples() -> (TransformPlan, TransformReceipt) {
             )
             .expect("example source should be valid"),
         ],
-        sql_path: "/workspace/transform.sql".into(),
         sql: "SELECT id FROM source ORDER BY id".into(),
         parameters: vec![],
         id_field: "id".into(),
@@ -109,7 +108,6 @@ fn transform_plan_schema() -> Value {
     object.extend([
         ("plan_id".into(), json!({"type":"string","pattern":"^xform_[0-9a-f]{64}$"})),
         ("sources".into(), json!({"type":"array","minItems":1,"maxItems":16,"items":transform_source_schema()})),
-        ("sql_path".into(), nonempty_string()),
         ("sql".into(), json!({"type":"string","minLength":1,"maxLength":65536})),
         ("parameters".into(), json!({"type":"array","maxItems":256,"items":{"type":["null","boolean","number","string"]}})),
         ("limits".into(), transform_limits_schema()),
@@ -122,7 +120,6 @@ fn transform_plan_schema() -> Value {
             "schema_version",
             "plan_id",
             "sources",
-            "sql_path",
             "sql",
             "sql_content_id",
             "parameters",

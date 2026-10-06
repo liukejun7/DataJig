@@ -279,6 +279,7 @@ pub struct WorkspaceCheckArtifact {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceStatusArtifact {
+    pub adapter: String,
     pub changed_files: usize,
     pub clean: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,6 +288,7 @@ pub struct WorkspaceStatusArtifact {
     pub current_state_id: Option<String>,
     pub dataset_id: String,
     pub dataset_coverage: String,
+    pub dataset_path: String,
     pub decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_inventory_id: Option<String>,
@@ -930,12 +932,14 @@ pub fn status_workspace(state: &Path, threads: usize) -> Result<WorkspaceStatusA
         count_changed_files(&baseline, &current).max(1)
     };
     Ok(WorkspaceStatusArtifact {
+        adapter: workspace.adapter.clone(),
         changed_files,
         clean,
         current_inventory_id: Some(current_inventory_id),
         current_state_id: None,
         dataset_id,
         dataset_coverage: baseline.coverage().into(),
+        dataset_path: workspace.dataset_path().into(),
         decision: if clean { "clean" } else { "review" }.into(),
         head_inventory_id: Some(head_inventory_id),
         head_state_id: None,
@@ -1199,12 +1203,14 @@ pub fn status_changeset(
     let staged_inventory_id = context.candidate.content_id()?;
     let unstaged_changes = current_inventory_id != staged_inventory_id;
     Ok(WorkspaceStatusArtifact {
+        adapter: context.workspace.adapter.clone(),
         changed_files: count_changed_files(&context.baseline, &current),
         clean: current_inventory_id == head_inventory_id,
         current_inventory_id: Some(current_inventory_id),
         current_state_id: None,
-        dataset_id: context.workspace.dataset_id,
+        dataset_id: context.workspace.dataset_id.clone(),
         dataset_coverage: context.candidate.coverage().into(),
+        dataset_path: context.workspace.dataset_path().into(),
         decision: if unstaged_changes { "stage" } else { "review" }.into(),
         head_inventory_id: Some(head_inventory_id),
         head_state_id: None,
@@ -1255,12 +1261,14 @@ fn status_jsonl_workspace(
             None
         };
     Ok(WorkspaceStatusArtifact {
+        adapter: workspace.adapter.clone(),
         changed_files: usize::from(!clean),
         clean,
         current_inventory_id: None,
         current_state_id: Some(current_state_id),
         dataset_id,
         dataset_coverage: "records_all_v1".into(),
+        dataset_path: workspace.dataset_path().into(),
         decision: if clean { "clean" } else { "review" }.into(),
         head_inventory_id: None,
         head_state_id: Some(head_state_id),
@@ -1388,12 +1396,14 @@ fn status_jsonl_changeset(
             None
         };
     Ok(WorkspaceStatusArtifact {
+        adapter: workspace.adapter.clone(),
         changed_files: usize::from(current_id != baseline_id),
         clean: current_id == baseline_id,
         current_inventory_id: None,
         current_state_id: Some(current_id),
         dataset_id,
         dataset_coverage: "records_all_v1".into(),
+        dataset_path: workspace.dataset_path().into(),
         decision: if unstaged { "stage" } else { "review" }.into(),
         head_inventory_id: None,
         head_state_id: Some(baseline_id),

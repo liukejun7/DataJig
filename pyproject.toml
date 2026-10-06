@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datajig"
-version = "0.6.1"
-description = "Agent-native local dataset workspace with immutable revisions and semantic validation"
+version = "0.7.0"
+description = "Agent-native data control plane for verified, versioned, training-ready datasets"
 readme = "PYPI.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -18,7 +18,8 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "Operating System :: OS Independent",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",

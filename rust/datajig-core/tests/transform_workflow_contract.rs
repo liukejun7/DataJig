@@ -165,7 +165,7 @@ fn transform_limits_match_public_contract() {
     assert_eq!(MAX_TRANSFORM_INPUTS, limits.inputs);
     assert_eq!(MAX_TRANSFORM_SOURCE_BYTES, limits.source_bytes);
     assert_eq!(MAX_TRANSFORM_OUTPUT_ROWS, limits.output_rows);
-    assert_eq!(TRANSFORM_PLAN_SCHEMA_VERSION, 1);
+    assert_eq!(TRANSFORM_PLAN_SCHEMA_VERSION, 2);
     assert_eq!(TRANSFORM_RECEIPT_SCHEMA_VERSION, 1);
 }
 
@@ -588,7 +588,6 @@ fn plan_input() -> TransformPlanInput {
             )
             .unwrap(),
         ],
-        sql_path: "/queries/train.sql".into(),
         sql: "SELECT id, score FROM events ORDER BY id".into(),
         parameters: vec![json!(7)],
         id_field: "id".into(),
@@ -666,7 +665,7 @@ impl WorkflowFixture {
                 )
                 .unwrap(),
             ],
-            sql_path: self.sql.clone(),
+            sql: fs::read_to_string(&self.sql).unwrap(),
             parameters: vec![],
             id_field: "id".into(),
             output_path: self.output.clone(),

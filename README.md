@@ -1,12 +1,11 @@
-# DataJig
+<h1 align="center">DataJig</h1>
 
 <p align="center">
-  <img src="assets/datajig-hero.png" alt="DataJig aligns dataset changes into a verified revision" width="100%">
+  <img src="./assets/datajig-hero.png" alt="A friendly DataJig assembly line turning raw datasets into verified training bundles" width="100%">
 </p>
 
 <p align="center">
-  <strong>The agent-native data control plane for reproducible model training.</strong><br>
-  Turn raw datasets into verified training inputs without losing identity between steps.
+  <strong>DataJig is an agent-native data control plane that turns raw datasets into verified, versioned, training-ready inputs.</strong>
 </p>
 
 <p align="center">
@@ -40,7 +39,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.6.1` · local-first · Rust-native control plane · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.7.0` · local-first · Rust-native control plane · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -120,7 +119,10 @@ datajig inspect data/papers.parquet --id-field paper_id
 `inspect` reports schema, row and missing-value counts, stable source identity,
 and ID health without printing cell values or raw IDs. CSV and flat Parquet are
 prepared deterministically into keyed JSONL before transactional change control.
-XLSX and direct database, Hive, and Spark adapters are not native yet.
+Recursive local datasets, including Hive-style partition directories, can be
+prepared as deterministic same-format shard sets. Partition path values are not
+materialized as columns. XLSX and direct database or Spark table adapters are
+not native yet.
 
 Compare two keyed JSONL revisions without creating a workspace:
 
@@ -212,7 +214,8 @@ product scope directly in the public project overview.
 ## Prepare tabular data
 
 Turn one CSV, flat Parquet, or JSONL file—or ordered same-format shards from a
-verified import receipt—into deterministic keyed JSONL with an ordered recipe:
+recursive local directory or verified import receipt—into deterministic keyed
+JSONL with an ordered recipe:
 
 ```json
 {
@@ -266,12 +269,18 @@ datajig prepare-apply artifacts/papers.prepare.plan.json \
   --accept-plan prep_...
 ```
 
-The plan binds direct source bytes or the immutable `hfimport_...` receipt,
-selected shard paths and bytes, recipe, canonical paths, output row counts, and
-the predicted JSONL hash. Shards run in canonical path order with global row,
-dedupe, and ID state. Apply re-executes the recipe and publishes only if every
-identity still matches. Outputs and provenance receipts use crash-recoverable
-transaction semantics, never overwrite existing files, and are safe to retry.
+For a recursive local dataset, point the same command at the directory and use
+bounded recipe selectors such as `"include": ["year=*/month=*/*.parquet"]` and
+`"ignore": ["**/_temporary/**"]`. Selected files are ordered by canonical
+relative path; membership changes invalidate apply.
+
+The plan binds direct source bytes, a deterministic `source_set_...`, or the
+immutable `hfimport_...` receipt, plus selected shard paths and bytes, recipe,
+canonical paths, output row counts, and the predicted JSONL hash. Shards run in
+canonical path order with global row, dedupe, and ID state. Apply re-executes the
+recipe and publishes only if every identity still matches. Outputs and
+provenance receipts use crash-recoverable transaction semantics, never
+overwrite existing files, and are safe to retry.
 Recipe v1 supports ordered `filter`, `select`, `rename`, `cast`, `trim`, `case`,
 `replace`, `fill_missing`, `drop_missing`, and `dedupe` steps. Missing means
 JSON `null` or an empty string; trim first when whitespace-only cells should be
@@ -301,7 +310,7 @@ Plan against a local CSV without publishing the output:
 ```bash
 datajig transform-plan \
   --input papers=data/papers.csv \
-  --sql transforms/high-score.sql \
+  --sql-file transforms/high-score.sql \
   --params transforms/params.json \
   --id-field paper_id \
   --output data/high-score.jsonl \
@@ -313,7 +322,7 @@ For Parquet, change only the explicit input path:
 ```bash
 datajig transform-plan \
   --input papers=data/papers.parquet \
-  --sql transforms/high-score.sql \
+  --sql-file transforms/high-score.sql \
   --params transforms/params.json \
   --id-field paper_id \
   --output data/high-score.jsonl \
@@ -397,7 +406,7 @@ remediation-plan command and a bounded findings query as argv arrays; it never
 guesses a domain value or silently applies a patch:
 
 ```bash
-datajig plan
+datajig review-plan
 datajig findings .datajig/latest.review.json --offset 0 --limit 50
 
 datajig seal \
@@ -509,15 +518,16 @@ Export a clean, sealed JSONL revision into deterministic splits and shards:
 datajig export \
   --output artifacts/papers-v1 \
   --seed research-42 \
-  --split train=9000 \
-  --split validation=1000
+  --split train=9 \
+  --split validation=1
 
 datajig export-info artifacts/papers-v1/datajig.bundle.json --verify
 ```
 
-Split weights are integer basis points: repeat `--split NAME=WEIGHT`, use a
-positive weight, and make all weights total exactly `10000`. This contract and
-the complete example are visible in `export --help` and `capabilities`.
+Split weights are positive relative integers: repeat `--split NAME=WEIGHT` and
+DataJig deterministically normalizes the full set to 10,000 allocation units.
+This contract and a complete example are visible in `export --help` and
+`capabilities`.
 Invalid arguments return structured remediation and executable `next_actions`
 instead of requiring an agent to infer the syntax by trial and error.
 
@@ -535,8 +545,8 @@ datajig export \
   --state .datajig \
   --revision rev_... \
   --output artifacts/papers-rev \
-  --split train=9000 \
-  --split validation=1000
+  --split train=9 \
+  --split validation=1
 ```
 
 DataJig verifies the immutable stored bytes before evaluating a view or writing
@@ -569,8 +579,8 @@ datajig view-check --recipe recipes/published.json
 datajig export \
   --view recipes/published.json \
   --output artifacts/published-v1 \
-  --split train=9000 \
-  --split validation=1000
+  --split train=9 \
+  --split validation=1
 ```
 
 ## Load verified training records
@@ -690,6 +700,7 @@ datajig agent-skill --output .agents/skills/datajig/SKILL.md
 | Revision-pinned Hugging Face dataset-repository import | Available on Linux and macOS |
 | Keyed JSONL inspection and record diff | Available |
 | Privacy-safe CSV/Parquet inspection and recipe scaffold | Available |
+| Recursive CSV/Parquet/JSONL dataset preparation with membership identity | Available on Linux and macOS |
 | Deterministic CSV/flat Parquet cleaning with plan/apply provenance | Available on Linux and macOS |
 | Task-scoped JSONL workspace and quality policy | Available on Linux and macOS |
 | Evidence-bound JSONL patch draft, preview, atomic apply, and exact undo | Available on Linux and macOS |
@@ -751,7 +762,7 @@ Requirements: Python 3.11+ and Rust 1.85+.
 DataJig is becoming the default control layer between an agent and its data:
 
 1. Arrow batch execution, joins, dataset-wide numeric transforms, and multi-record patch sets;
-2. XLSX and database snapshot adapters, followed by Spark/Hive manifests;
+2. XLSX and database snapshot adapters, followed by remote Spark/Hive catalog manifests;
 3. revision adapters for S3/GCS/Azure, Oxen, DVC, and additional dataset hubs;
 4. native Windows filesystem semantics and wheels.
 

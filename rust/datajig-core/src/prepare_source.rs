@@ -8,6 +8,10 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use walkdir::WalkDir;
+
+pub const MAX_LOCAL_PREPARE_SOURCE_FILES: usize = 10_000;
+pub const MAX_LOCAL_PREPARE_SOURCE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PrepareSourceFormat {
@@ -37,9 +41,13 @@ struct ResolvedSourceFile {
     size: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum SourceVerification {
-    Direct,
+    DirectFile,
+    LocalDirectory {
+        includes: Vec<String>,
+        ignores: Vec<String>,
+    },
     ImportReceipt,
 }
 
@@ -62,7 +70,117 @@ impl ResolvedPrepareSource {
         if source.file_name().and_then(|value| value.to_str()) == Some("datajig.hf-import.json") {
             return Self::resolve_import(source, format, includes, ignores);
         }
+        if source.is_dir() {
+            return Self::resolve_directory(source, format, includes, ignores);
+        }
         Self::resolve_direct(source, format, includes, ignores)
+    }
+
+    fn resolve_directory(
+        source: &Path,
+        format: PrepareSourceFormat,
+        includes: &[String],
+        ignores: &[String],
+    ) -> Result<Self> {
+        if fs::symlink_metadata(source)?.file_type().is_symlink() {
+            return Err(PrepareInvalidDataError::new(
+                "local preparation source directory must not be a symbolic link",
+            )
+            .into());
+        }
+        let source_path = source
+            .canonicalize()
+            .context("cannot resolve local preparation source directory")?;
+        let include_set = build_glob_set(includes, "include")?;
+        let ignore_set = build_glob_set(ignores, "ignore")?;
+        let mut files = Vec::new();
+        let mut total_bytes = 0u64;
+        for entry in WalkDir::new(&source_path).follow_links(false) {
+            let entry = entry.map_err(|error| {
+                PrepareInvalidDataError::new(format!(
+                    "cannot walk local preparation source directory: {error}"
+                ))
+            })?;
+            if entry.depth() == 0 || entry.file_type().is_dir() {
+                continue;
+            }
+            let relative = entry.path().strip_prefix(&source_path).map_err(|_| {
+                PrepareInvalidDataError::new("local preparation path escaped its source directory")
+            })?;
+            let relative_path = relative
+                .to_str()
+                .ok_or_else(|| {
+                    PrepareInvalidDataError::new("local preparation paths must contain valid UTF-8")
+                })?
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            if entry.file_type().is_symlink() {
+                return Err(PrepareInvalidDataError::new(format!(
+                    "local preparation path {relative_path:?} must not be a symbolic link"
+                ))
+                .into());
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let included = if includes.is_empty() {
+                format.matches_path(&relative_path)
+            } else {
+                include_set.is_match(&relative_path)
+            };
+            if !included || ignore_set.is_match(&relative_path) {
+                continue;
+            }
+            if !format.matches_path(&relative_path) {
+                return Err(PrepareInvalidDataError::new(format!(
+                    "selected local file {relative_path:?} does not match the recipe source format"
+                ))
+                .into());
+            }
+            if files.len() == MAX_LOCAL_PREPARE_SOURCE_FILES {
+                return Err(PrepareInvalidDataError::new(format!(
+                    "local preparation source exceeds {MAX_LOCAL_PREPARE_SOURCE_FILES} selected files"
+                ))
+                .into());
+            }
+            let size = entry.metadata()?.len();
+            total_bytes = total_bytes.checked_add(size).ok_or_else(|| {
+                PrepareInvalidDataError::new("local preparation source byte count overflow")
+            })?;
+            if total_bytes > MAX_LOCAL_PREPARE_SOURCE_BYTES {
+                return Err(PrepareInvalidDataError::new(format!(
+                    "local preparation source exceeds {MAX_LOCAL_PREPARE_SOURCE_BYTES} selected bytes"
+                ))
+                .into());
+            }
+            files.push(ResolvedSourceFile {
+                absolute_path: entry.path().to_owned(),
+                content_id: hash_file(entry.path(), "file")?,
+                relative_path,
+                size,
+            });
+        }
+        if files.is_empty() {
+            return Err(PrepareInvalidDataError::new(
+                "local preparation source selection contains no matching files",
+            )
+            .into());
+        }
+        files.sort_by(|left, right| {
+            left.relative_path
+                .as_bytes()
+                .cmp(right.relative_path.as_bytes())
+        });
+        let content_id = directory_content_id(&files);
+        Ok(Self {
+            content_id,
+            files,
+            format,
+            source_path,
+            verification: SourceVerification::LocalDirectory {
+                includes: includes.to_vec(),
+                ignores: ignores.to_vec(),
+            },
+        })
     }
 
     fn resolve_import(
@@ -133,6 +251,12 @@ impl ResolvedPrepareSource {
             )
             .into());
         }
+        if fs::symlink_metadata(source)?.file_type().is_symlink() {
+            return Err(PrepareInvalidDataError::new(
+                "direct preparation source must not be a symbolic link",
+            )
+            .into());
+        }
         let source_path = source
             .canonicalize()
             .context("cannot resolve preparation source")?;
@@ -164,7 +288,7 @@ impl ResolvedPrepareSource {
             }],
             format,
             source_path,
-            verification: SourceVerification::Direct,
+            verification: SourceVerification::DirectFile,
         })
     }
 
@@ -177,11 +301,21 @@ impl ResolvedPrepareSource {
     }
 
     pub(crate) fn verify_unchanged(&self) -> Result<()> {
-        match self.verification {
-            SourceVerification::Direct => {
+        match &self.verification {
+            SourceVerification::DirectFile => {
                 if hash_file(&self.files[0].absolute_path, "source")? != self.content_id {
                     return Err(PrepareInvalidDataError::new(
                         "direct preparation source changed content",
+                    )
+                    .into());
+                }
+            }
+            SourceVerification::LocalDirectory { includes, ignores } => {
+                let current =
+                    Self::resolve_directory(&self.source_path, self.format, includes, ignores)?;
+                if current.content_id != self.content_id {
+                    return Err(PrepareInvalidDataError::new(
+                        "local preparation source directory changed content or membership",
                     )
                     .into());
                 }
@@ -228,6 +362,19 @@ impl ResolvedPrepareSource {
             .map(|file| file.relative_path.as_str())
             .collect()
     }
+}
+
+fn directory_content_id(files: &[ResolvedSourceFile]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"datajig-prepare-directory-v1\0");
+    for file in files {
+        hasher.update(&(file.relative_path.len() as u64).to_le_bytes());
+        hasher.update(file.relative_path.as_bytes());
+        hasher.update(&file.size.to_le_bytes());
+        hasher.update(&(file.content_id.len() as u64).to_le_bytes());
+        hasher.update(file.content_id.as_bytes());
+    }
+    format!("source_set_{}", hasher.finalize().to_hex())
 }
 
 struct ShardSchemaConsumer<'a, C> {
@@ -399,6 +546,80 @@ mod tests {
         assert!(source.content_id().starts_with("hfimport_"));
         assert_eq!(vec!["data/a.csv", "data/z.csv"], source.selected_paths());
         source.verify_unchanged().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_directory_selects_shards_recursively_and_detects_membership_drift() {
+        let root = fixture_root("local-directory");
+        let source_root = root.join("dataset");
+        fs::create_dir_all(source_root.join("year=2025/month=02")).unwrap();
+        fs::create_dir_all(source_root.join("year=2025/month=01")).unwrap();
+        write(
+            &source_root.join("year=2025/month=02/z.csv"),
+            b"id,value\nz,2\n",
+        );
+        write(
+            &source_root.join("year=2025/month=01/a.csv"),
+            b"id,value\na,1\n",
+        );
+        write(&source_root.join("year=2025/month=01/skip.csv"), b"id\nx\n");
+
+        let source = ResolvedPrepareSource::resolve(
+            &source_root,
+            PrepareSourceFormat::Csv { delimiter: b',' },
+            &["**/*.csv".into()],
+            &["**/skip.csv".into()],
+        )
+        .unwrap();
+
+        assert!(source.content_id().starts_with("source_set_"));
+        assert_eq!(
+            vec!["year=2025/month=01/a.csv", "year=2025/month=02/z.csv"],
+            source.selected_paths()
+        );
+        source.verify_unchanged().unwrap();
+
+        write(
+            &source_root.join("year=2025/month=01/new.csv"),
+            b"id,value\nn,3\n",
+        );
+        assert!(source.verify_unchanged().is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_sources_reject_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let root = fixture_root("local-symlink");
+        let target = root.join("target.csv");
+        write(&target, b"id\na\n");
+        let linked_file = root.join("linked.csv");
+        symlink(&target, &linked_file).unwrap();
+        assert!(
+            ResolvedPrepareSource::resolve(
+                &linked_file,
+                PrepareSourceFormat::Csv { delimiter: b',' },
+                &[],
+                &[],
+            )
+            .is_err()
+        );
+
+        let source_root = root.join("dataset");
+        fs::create_dir(&source_root).unwrap();
+        symlink(&target, source_root.join("linked.csv")).unwrap();
+        assert!(
+            ResolvedPrepareSource::resolve(
+                &source_root,
+                PrepareSourceFormat::Csv { delimiter: b',' },
+                &[],
+                &[],
+            )
+            .is_err()
+        );
         let _ = fs::remove_dir_all(root);
     }
 

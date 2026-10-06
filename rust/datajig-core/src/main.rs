@@ -28,13 +28,15 @@ use datajig_core::{
     undo_jsonl_patch, write_agent_skill,
 };
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
     name = "datajig-core",
     version,
-    about = "Machine-readable dataset review core"
+    about = "Machine-readable dataset review core",
+    after_help = "Lifecycle:\n  prepare/import -> transform -> version -> review/seal -> export -> consume"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -112,7 +114,7 @@ enum Command {
     },
     /// Export a clean sealed JSONL revision as deterministic training shards.
     #[command(
-        after_help = "Example:\n  datajig export --state .datajig --output bundle --split train=7000 --split val=2000 --split test=1000"
+        after_help = "Example:\n  datajig export --state .datajig --output bundle --split train=7 --split val=2 --split test=1"
     )]
     Export {
         #[arg(long, default_value = ".datajig")]
@@ -127,7 +129,7 @@ enum Command {
         revision: Option<String>,
         #[arg(long, default_value = "datajig-v1")]
         seed: String,
-        /// Repeatable NAME=WEIGHT basis-point split; positive integer weights must total 10000.
+        /// Repeatable NAME=WEIGHT split; each WEIGHT is a positive relative integer weight.
         #[arg(long = "split", required = true, value_name = "NAME=WEIGHT")]
         splits: Vec<String>,
         /// Record target per shard. Final shards may contain fewer records.
@@ -237,7 +239,7 @@ enum Command {
         change: String,
     },
     /// Turn the latest workspace review into a deterministic Agent action plan.
-    Plan {
+    ReviewPlan {
         /// Project-local state directory created by init.
         #[arg(long, default_value = ".datajig")]
         state: PathBuf,
@@ -387,7 +389,7 @@ enum Command {
     },
     /// Plan deterministic CSV/Parquet/JSONL preparation from one file or import receipt.
     PreparePlan {
-        /// CSV, flat Parquet, JSONL, or datajig.hf-import.json source.
+        /// CSV, flat Parquet, JSONL, a recursive same-format directory, or datajig.hf-import.json.
         source: PathBuf,
         /// Schema-1 preparation recipe.
         #[arg(long)]
@@ -401,15 +403,22 @@ enum Command {
     },
     /// Execute and persist an immutable plan for a bounded local SQL transform.
     #[command(
-        after_help = "Example:\n  datajig transform-plan --input events=data/events.csv --sql transform.sql --id-field id --output prepared.jsonl --plan transform-plan.json\n\nEach --input uses ALIAS=PATH. Parameters are a JSON array of scalars. Multi-row SQL must end its top-level ORDER BY with the output ID alias. Requires: pip install 'datajig[duckdb]'."
+        after_help = "Example:\n  datajig transform-plan --input events=data/events.csv --sql 'SELECT id FROM events ORDER BY id' --id-field id --output prepared.jsonl --plan transform-plan.json\n\nEach --input uses ALIAS=PATH. CSV columns are strings; use explicit CAST for numeric semantics. Parameters are a JSON array of scalars. Multi-row SQL must end its top-level ORDER BY with the output ID alias. Requires: pip install 'datajig[duckdb]'."
     )]
     TransformPlan {
         /// Repeatable staged input in ALIAS=PATH form; supports CSV, Parquet, and JSONL.
         #[arg(long = "input", required = true, value_name = "ALIAS=PATH")]
         inputs: Vec<String>,
-        /// UTF-8 SELECT query (maximum 64 KiB).
-        #[arg(long)]
-        sql: PathBuf,
+        /// Inline UTF-8 SELECT query (maximum 64 KiB).
+        #[arg(
+            long,
+            required_unless_present = "sql_file",
+            conflicts_with = "sql_file"
+        )]
+        sql: Option<String>,
+        /// UTF-8 file containing one SELECT query (maximum 64 KiB).
+        #[arg(long, required_unless_present = "sql", conflicts_with = "sql")]
+        sql_file: Option<PathBuf>,
         /// Optional JSON array containing at most 256 scalar positional parameters.
         #[arg(long)]
         params: Option<PathBuf>,
@@ -606,7 +615,7 @@ fn main() {
         Some(
             "artifact-schema" | "findings" | "finding" | "explain" | "export" | "export-info"
             | "view-check" | "inventory" | "review" | "init" | "check" | "changeset-begin"
-            | "changeset-stage" | "plan" | "log" | "locate" | "patch-apply" | "patch-draft"
+            | "changeset-stage" | "review-plan" | "log" | "locate" | "patch-apply" | "patch-draft"
             | "patch-preview" | "patch-undo" | "hf-import-apply" | "hf-import-plan"
             | "prepare-apply" | "prepare-plan" | "repository-check" | "repository-install" | "seal"
             | "status" | "transform-apply" | "transform-info" | "transform-plan",
@@ -799,6 +808,14 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             limits_object.insert("max_prepare_steps".into(), json!(64));
             limits_object.insert("max_prepare_rows".into(), json!(5_000_000));
             limits_object.insert(
+                "max_local_prepare_source_files".into(),
+                json!(datajig_core::MAX_LOCAL_PREPARE_SOURCE_FILES),
+            );
+            limits_object.insert(
+                "max_local_prepare_source_bytes".into(),
+                json!(datajig_core::MAX_LOCAL_PREPARE_SOURCE_BYTES),
+            );
+            limits_object.insert(
                 "max_hf_import_files".into(),
                 json!(datajig_core::MAX_HF_IMPORT_FILES),
             );
@@ -882,7 +899,8 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 "artifact_schema_versions": [datajig_core::ARTIFACT_SCHEMA_VERSION],
                 "repository_integration_schema_versions": [datajig_core::REPOSITORY_INTEGRATION_SCHEMA_VERSION],
                 "prepare_recipe_schema_versions": [datajig_core::PREPARE_RECIPE_SCHEMA_VERSION],
-                "prepare_source_formats": ["csv", "parquet"],
+                "prepare_source_formats": ["csv", "parquet", "jsonl"],
+                "prepare_source_kinds": ["file", "directory", "hugging_face_import_receipt"],
                 "hf_import_plan_schema_versions": [datajig_core::HF_IMPORT_PLAN_SCHEMA_VERSION],
                 "hf_import_receipt_schema_versions": [datajig_core::HF_IMPORT_RECEIPT_SCHEMA_VERSION],
                 "hf_import_repository_types": ["dataset"],
@@ -956,12 +974,11 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 json!({
                     "training_split": {
                         "syntax": "NAME=WEIGHT",
-                        "unit": "basis_points",
+                        "unit": "relative_integer",
                         "weight_min": 1,
-                        "weight_max": 10000,
-                        "weight_total": 10000,
+                        "normalized_weight_total": 10000,
                         "repeatable": true,
-                        "example": ["train=7000", "val=2000", "test=1000"]
+                        "example": ["train=7", "val=2", "test=1"]
                     },
                     "training_shard": {
                         "record_limit": "hard_target_final_shard_may_be_smaller",
@@ -1317,7 +1334,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                     json!([{"command": "seal", "args": context_args}])
                 } else {
                     json!([
-                        {"command": "plan", "args": context_args},
+                        {"command": "review-plan", "args": context_args},
                         {"command": "findings", "args": [
                             artifact.report_path, "--offset", "0", "--limit", "50"
                         ]}
@@ -1337,7 +1354,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 json!([{"command": "seal", "args": ["--state", state]}])
             } else {
                 json!([
-                    {"command": "plan", "args": ["--state", state]}
+                    {"command": "review-plan", "args": ["--state", state]}
                 ])
             };
             println!(
@@ -1352,7 +1369,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 })
             );
         }
-        Command::Plan {
+        Command::ReviewPlan {
             state,
             change,
             changeset,
@@ -1722,6 +1739,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
         Command::TransformPlan {
             inputs,
             sql,
+            sql_file,
             params,
             id_field,
             output,
@@ -1730,9 +1748,10 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             let python = transform_provider_python()?;
             let inputs = parse_transform_inputs(&inputs)?;
             let parameters = load_transform_parameters(params.as_deref())?;
+            let sql = load_transform_sql(sql, sql_file.as_deref())?;
             let artifact = plan_transform(datajig_core::TransformPlanRequest {
                 inputs,
-                sql_path: sql,
+                sql,
                 parameters,
                 id_field,
                 output_path: output,
@@ -2276,6 +2295,85 @@ fn load_transform_parameters(path: Option<&std::path::Path>) -> Result<Vec<Value
     Ok(parameters)
 }
 
+fn load_transform_sql(inline: Option<String>, path: Option<&Path>) -> Result<String, CommandError> {
+    let sql = match (inline, path) {
+        (Some(sql), None) => sql,
+        (None, Some(path)) => {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+            }
+            let mut file = options.open(path).map_err(|error| {
+                (
+                    "INVALID_ARGUMENT",
+                    2,
+                    anyhow::anyhow!("cannot open SQL file {}: {error}", path.display()),
+                )
+            })?;
+            if !file
+                .metadata()
+                .map_err(anyhow::Error::from)
+                .map_err(|error| ("INVALID_ARGUMENT", 2, error))?
+                .is_file()
+            {
+                return Err((
+                    "INVALID_ARGUMENT",
+                    2,
+                    anyhow::anyhow!("SQL file must be a regular file: {}", path.display()),
+                ));
+            }
+            let mut bytes = Vec::new();
+            file.by_ref()
+                .take((datajig_core::MAX_TRANSFORM_SQL_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)
+                .map_err(|error| {
+                    (
+                        "INVALID_ARGUMENT",
+                        2,
+                        anyhow::anyhow!("cannot read SQL file {}: {error}", path.display()),
+                    )
+                })?;
+            String::from_utf8(bytes).map_err(|_| {
+                (
+                    "INVALID_ARGUMENT",
+                    2,
+                    anyhow::anyhow!("SQL file must contain UTF-8 text: {}", path.display()),
+                )
+            })?
+        }
+        _ => {
+            return Err((
+                "INVALID_ARGUMENT",
+                2,
+                anyhow::anyhow!(
+                    "provide exactly one of --sql '<SELECT ...>' or --sql-file query.sql"
+                ),
+            ));
+        }
+    };
+    if sql.trim().is_empty() {
+        return Err((
+            "INVALID_ARGUMENT",
+            2,
+            anyhow::anyhow!("SQL must not be empty; example: --sql 'SELECT * FROM source'"),
+        ));
+    }
+    if sql.len() > datajig_core::MAX_TRANSFORM_SQL_BYTES {
+        return Err((
+            "INVALID_ARGUMENT",
+            2,
+            anyhow::anyhow!(
+                "SQL exceeds the {} byte limit",
+                datajig_core::MAX_TRANSFORM_SQL_BYTES
+            ),
+        ));
+    }
+    Ok(sql)
+}
+
 fn transform_provider_python() -> Result<PathBuf, CommandError> {
     std::env::var_os("_DATAJIG_PROVIDER_PYTHON")
         .filter(|value| !value.is_empty())
@@ -2348,7 +2446,7 @@ fn lock_command_workspace(command: &Command) -> Result<Option<WorkspaceLock>, Co
         Command::Check { state, .. }
         | Command::ChangesetBegin { state, .. }
         | Command::ChangesetStage { state, .. }
-        | Command::Plan { state, .. }
+        | Command::ReviewPlan { state, .. }
         | Command::PatchApply { state, .. }
         | Command::PatchUndo { state, .. }
         | Command::Seal { state, .. } => Some((state, true)),

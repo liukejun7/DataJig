@@ -1183,7 +1183,22 @@ fn load_plan(path: &Path) -> Result<PreparePlan> {
 }
 
 pub(crate) fn hash_file(path: &Path, prefix: &str) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("cannot open {prefix} file"))?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("cannot open {prefix} file"))?;
+    if !file.metadata()?.is_file() {
+        return Err(PrepareInvalidDataError::new(format!(
+            "{prefix} source must be a regular file"
+        ))
+        .into());
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"datajig-prepare-input-v1\0");
     let mut buffer = [0u8; 1024 * 1024];

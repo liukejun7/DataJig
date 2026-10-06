@@ -18,9 +18,13 @@ FORBIDDEN_ROOTS = {
     ".ruff_cache",
     ".superpowers",
     ".venv",
+    ".codex",
+    "artifacts",
     "build",
     "dist",
+    "doc",
     "docs",
+    "htmlcov",
 }
 
 
