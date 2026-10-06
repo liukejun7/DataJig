@@ -31,6 +31,7 @@ mod tabular_source;
 mod training_bundle;
 mod training_consumption;
 mod transform;
+mod transform_sql;
 mod tutorial;
 mod workspace;
 mod workspace_store;
@@ -166,6 +167,10 @@ pub use transform::{
     TransformExecutionEvidence, TransformExpectedOutput, TransformField, TransformLimits,
     TransformPlan, TransformPlanInput, TransformProviderIdentity, TransformReceipt,
     TransformSource, TransformSourceFormat,
+};
+pub use transform_sql::{
+    TransformOrderContract, TransformOrderError, TransformSqlParseError, TransformSqlPolicyError,
+    ValidatedTransformQuery, validate_transform_query,
 };
 pub use tutorial::{TutorialArtifact, run_tutorial};
 #[cfg(unix)]

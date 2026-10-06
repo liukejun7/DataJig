@@ -522,6 +522,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlparser",
  "ureq",
  "url",
  "walkdir",
@@ -1502,7 +1503,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1664,6 +1665,27 @@ name = "snap"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
+
+[[package]]
+name = "sqlparser"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
+dependencies = [
+ "log",
+ "sqlparser_derive",
+]
+
+[[package]]
+name = "sqlparser_derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2905ae8e8148d8f7f5748ea95d1e949fa4fc1d7f5161547b758ad118b2e4b0aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
 
 [[package]]
 name = "stable_deref_trait"
