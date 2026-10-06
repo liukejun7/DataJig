@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+duckdb = [
+  "duckdb==1.5.6",
+]
 dev = [
   "build>=1.2,<2",
   "mypy>=1.14,<2",
