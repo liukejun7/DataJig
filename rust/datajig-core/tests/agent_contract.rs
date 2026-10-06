@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_fec506c91d9ef41bf272cd1fef2b02dc236074d762ceaf28c3fac1e1913ccf86", identities[0],
+        "contract_8680432a1b97a0ae2ba78c8cb3c0ec9fefc39fd2feb57ed8038108d41b69bb62", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }

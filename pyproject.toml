@@ -4,9 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "datajig"
-version = "0.6.0"
+version = "0.6.1"
 description = "Agent-native local dataset workspace with immutable revisions and semantic validation"
-readme = "README.md"
+readme = "PYPI.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

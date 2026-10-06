@@ -3,6 +3,25 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1] - 2026-10-06
+
+### Added
+
+- Top-level `datajig --version` output sourced from installed package metadata.
+
+### Changed
+
+- GitHub Actions and generated repository workflows now use immutable action
+  revisions backed by the Node 24 runtime.
+- The GitHub overview now uses a repository-relative, friendly illustrated hero
+  and leads with DataJig's agent-native control-plane positioning. PyPI uses a
+  dedicated English description without repository-relative media.
+
+### Fixed
+
+- The README hero no longer depends on unauthenticated raw access to a private
+  repository, which previously rendered as a broken image.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added

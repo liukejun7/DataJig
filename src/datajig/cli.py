@@ -5,6 +5,7 @@ import json
 import sys
 import tomllib
 from collections.abc import Sequence
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Never
 
@@ -35,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     from datajig.models import Severity
 
     parser = DataJigArgumentParser(prog="datajig")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_tool_version()}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     compare_parser = subparsers.add_parser("compare", help="compare two dataset snapshots")
     compare_parser.add_argument("baseline", type=Path)
@@ -384,6 +386,13 @@ def build_parser() -> argparse.ArgumentParser:
     record_diff_parser.add_argument("after", type=Path)
     record_diff_parser.add_argument("--id-field", default="id")
     return parser
+
+
+def _tool_version() -> str:
+    try:
+        return version("datajig")
+    except PackageNotFoundError:
+        return "0+unknown"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

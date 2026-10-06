@@ -7,89 +7,87 @@
 </p>
 
 <p align="center">
-  <strong>从 raw dataset 到可验证训练输入的 Agent 原生数据供应链。</strong><br>
-  导入、处理、审查、版本化、导出与校验，全程不丢失数据身份。
+  <strong>面向可复现模型训练的 Agent 原生数据控制平面。</strong><br>
+  从 raw dataset 到可验证训练输入，全程不丢失数据身份。
 </p>
 
-DataJig 把上游原始 bytes 和 Agent 的一次数据修改变成可追溯训练数据事务：
+DataJig 为 AI Agent 提供一条从原始数据到模型训练的安全、可审计路径：显式计划、
+确定性身份、语义检查、不可变 revision，以及哪些记录越过了已验证训练适配器边界
+的证据。
 
 ```text
-锁定源 → 导入 receipt → 确定性处理 → 审查 → 接受 revision → 导出
-            │                    ↑                         │
-            └── content ID ──────┴──────────── 验证后消费 ┘
+raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → 训练
+                   └──────── content-addressed evidence ───┘  └→ receipt
 ```
 
-它不是另一个 Git、DVC 或 Oxen。DataJig 位于存储与处理工具之上，控制 Agent
-真正修改数据的那一刻，并向训练代码交付已锁定身份、已校验完整性的记录。
-任务、候选、审查、接受的 revision、数据子集和训练 bundle 都有确定性身份；
-证据过期或混入计划外修改时会拒绝继续。
+任务、候选、审查、revision、subset、transform 和 training bundle 都有确定性身份。
+如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
+会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.6.0` · 本地优先 · Rust 原生控制平面 · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.6.1` · 本地优先 · Rust 原生控制平面 · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
-## 为什么需要 DataJig
+## DataJig 在技术栈中的位置
 
-Agent 很会改数据，但一次脚本成功并不能回答：
+DataJig 不重造周围的成熟引擎，而是让这些引擎可以安全地交给 Agent，并在训练边界
+保持可复现。
 
-- Agent 审查的究竟是哪一份数据？
-- 审查之后文件是否又被其他进程修改？
-- 修改是否属于当前声明的任务？
-- 为什么这个版本被接受？
-- 训练最终读到了哪些记录和 shard bytes？
+| 层次 | 现有工具 | DataJig 的职责 |
+| --- | --- | --- |
+| 存储与传输 | Git、DVC、Oxen、lakeFS、对象存储 | 锁定精确上游 bytes 并保留 provenance |
+| 数据计算 | DuckDB、Polars、Spark | 授权有边界的处理，绑定计划、输入、输出与 receipt |
+| 数据集变更控制 | 脚本与人工 review | 限定 Agent 修改范围，做语义检查并 seal 不可变 revision |
+| 模型训练 | PyTorch、Hugging Face、自定义 loader | 交付已验证 shard，并记录哪些数据越过适配器边界 |
 
-DataJig 用一套小而确定的机器协议回答这些问题。完整证据保存在本地文件中，
-stdout 只返回适合 Agent 上下文窗口的有界 JSON。
+真正的差异化是控制协议：有界 JSON、可执行 `next_actions`、版本匹配的 Agent Skill、
+确定性的 `ds_` / `chg_` / `rev_` 身份，以及可以独立重新验证的证据链。
 
-## 快速开始
+## 60 秒跑通
 
-安装稳定版。PyPI wheel 已经内置 Rust 内核：
+PyPI wheel 已内置 Rust 内核，不需要单独配置 Rust toolchain：
 
 ```bash
 python -m pip install datajig
+datajig --version
 datajig capabilities
+datajig tutorial ./datajig-tutorial
 ```
 
-需要 join、筛选、聚合等 SQL 处理时，安装精确锁定版本的可选 DuckDB provider：
+Tutorial 会生成一个小数据集，完成一次审查、seal 和训练 bundle 导出，并返回精确的
+验证动作。所有响应都是同时适合人和 Agent 的有界 JSON。需要 join、筛选、聚合等
+SQL 处理时，再安装精确锁定版本的 DuckDB provider：
 
 ```bash
 python -m pip install 'datajig[duckdb]'
 ```
 
-无需准备输入文件，先用一条命令实际跑完整流程：
+## 一条贯穿全程的证据链
 
-```bash
-datajig tutorial ./datajig-tutorial
-```
+| 阶段 | DataJig 提供的保证 |
+| --- | --- |
+| Import | branch/tag 只解析一次，绑定不可变 Hugging Face commit 与已验证文件集合 |
+| Inspect | 不泄露 cell value 与原始 ID，仍能得到 schema、missingness 和稳定源身份 |
+| Prepare | CSV、Parquet、JSONL recipe 可预测输出身份并确定性执行 |
+| Transform | Rust 授权 SQL，DuckDB 只在资源边界内对 staged alias 计算 |
+| Review | 任务范围内的语义 finding 与过期证据检测 |
+| Version | content-addressed 不可变 revision，并绑定 transform provenance |
+| Export | 确定性的 subset、split 与训练 shard |
+| Consume | 运行时重新校验，并生成适配器边界的 at-least-once receipt |
 
-命令要求目标目录尚不存在，并自动生成一个小型 keyed JSONL 数据集、不可变 workspace、
-一次经过审查和 seal 的 Agent 修改，以及可验证训练 bundle。有界 JSON 响应会返回所有
-关键身份和精确的 `export-info` 校验动作。
+## 把 Agent 合同安装到仓库
 
-发现类命令会返回确定性的 `agent_contract_id`，覆盖命令目录和输入 artifact schema。
-当 Agent 或 CI 需要在协议未经审查即发生变化时 fail closed，可以锁定这个身份；生成的
-Agent Skill 也会记录同一个身份。
-
-用一条命令即可把这套协议安装进任意 Git worktree：
+发现类命令会返回覆盖命令目录和 artifact schema 的确定性 `agent_contract_id`。一条命令
+即可安装版本匹配的 Agent Skill、pre-commit guard 和固定完整 SHA 的 CI workflow：
 
 ```bash
 datajig repository-install --root .
 datajig repository-check --root .
 ```
 
-安装器会生成版本匹配的 Agent Skill、固定 action commit 的 GitHub Actions workflow、
-可执行的 pre-commit hook，并最后写入作为提交点的内容寻址
-`.datajig-repository.json`。Lock 精确绑定 DataJig 版本、Agent 合同、受管文件 bytes、
-启用组件和仓库相对 workspace。安装可幂等重试并能从中断中恢复；遇到未知或本地修改
-的目标、冲突的 `core.hooksPath`、符号链接、硬链接，以及会静默删除组件或 state 绑定
-的升级时会拒绝覆盖。
+安装可幂等重试并能从中断恢复。未知文件、被修改的受管资产、hook 冲突、符号链接、
+硬链接与静默删除组件都会被拒绝，不会直接覆盖。`repository-check` 完全只读，协议、
+文件或绑定 workspace 发生漂移都会失败。
 
-`repository-check` 完全只读：协议或文件发生漂移就会失败，并验证每个绑定 workspace
-仍对应干净的数据集 HEAD。全新 CI clone 中可用 `--ci`，它只跳过 clone-local 的
-`core.hooksPath` 检查，其余内容与 workspace 检查保持不变。首次安装时可用
-`--no-hook` 或 `--no-github-actions` 省略可选组件。只有当 `.datajig` 等 workspace
-目录会在所有执行检查的环境（包括 CI）中被显式还原时，才添加可重复的
-`--state .datajig` 绑定；DataJig 不会隐式上传或恢复被忽略的 workspace state。
-
-对 JSONL、CSV 或 flat Parquet，都从同一个隐私安全命令开始：
+## 从任意已支持的本地数据开始
 
 ```bash
 datajig inspect data/papers.jsonl --id-field paper_id
@@ -97,13 +95,9 @@ datajig inspect data/papers.csv --id-field paper_id
 datajig inspect data/papers.parquet --id-field paper_id
 ```
 
-`inspect` 会报告 schema、行数、缺失值计数、稳定的源身份和 ID 健康度，但不会打印
-cell value 或原始 ID。对于 CSV 和 Parquet，它还会返回可编辑的 preparation recipe
-模板和 `prepare-plan` 下一步；对于 JSONL，文件就绪时会建议初始化 workspace。
-
-CSV 和 flat Parquet 已是原生 inspect 与确定性 prepare 输入。任务级事务 workspace
-当前以 keyed JSONL 为核心，因此表格数据会先准备为 JSONL 再进入变更控制。XLSX 与
-数据库、Hive、Spark 直连 adapter 尚未实现。
+`inspect` 会报告 schema、行数、缺失值计数、稳定源身份和 ID 健康度，但不会打印
+cell value 或原始 ID。CSV 和 flat Parquet 会先被确定性处理成 keyed JSONL，再进入
+事务化变更控制。XLSX 与数据库、Hive、Spark 直连 adapter 尚未实现。
 
 无需创建 workspace，也能比较两个 keyed JSONL revision：
 

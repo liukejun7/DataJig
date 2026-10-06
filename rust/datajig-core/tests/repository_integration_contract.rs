@@ -139,7 +139,8 @@ fn managed_assets_pin_one_contract_and_exact_package_version() {
         env!("CARGO_PKG_VERSION")
     )));
     assert!(workflow.contains("datajig repository-check --root . --ci"));
-    assert!(workflow.contains("actions/checkout@11d5960a326750d5838078e36cf38b85af677262"));
+    assert!(workflow.contains("actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"));
+    assert!(workflow.contains("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"));
 
     let hook = String::from_utf8(render_repository_hook()).unwrap();
     assert!(hook.starts_with("#!/bin/sh\n"));

@@ -46,6 +46,14 @@ class DuckDbPackagingTest(unittest.TestCase):
         self.assertEqual(["duckdb==1.5.6"], metadata["project"]["optional-dependencies"]["duckdb"])
         self.assertNotIn("duckdb", " ".join(metadata["project"]["dependencies"]).lower())
 
+    def test_source_checkout_does_not_report_a_stale_release_version(self) -> None:
+        with mock.patch.object(
+            provider.metadata,
+            "version",
+            side_effect=provider.metadata.PackageNotFoundError,
+        ):
+            self.assertEqual("0+unknown", provider._implementation_version())
+
 
 @unittest.skipIf(duckdb is None, "optional DuckDB provider is not installed")
 class DuckDbProviderTest(unittest.TestCase):

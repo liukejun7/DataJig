@@ -18,8 +18,9 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             (REPOSITORY_ROOT / "rust" / "datajig-core" / "Cargo.toml").read_text()
         )
 
-        self.assertEqual("0.6.0", metadata["project"]["version"])
-        self.assertEqual("0.6.0", rust_metadata["package"]["version"])
+        self.assertEqual("0.6.1", metadata["project"]["version"])
+        self.assertEqual("0.6.1", rust_metadata["package"]["version"])
+        self.assertEqual("PYPI.md", metadata["project"]["readme"])
         self.assertEqual(
             [{"name": "Kejun Liu", "email": "liukj7@gmail.com"}],
             metadata["project"]["authors"],
@@ -28,6 +29,13 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         self.assertEqual(
             ["duckdb==1.5.6"], metadata["project"]["optional-dependencies"]["duckdb"]
         )
+
+        pypi_readme = (REPOSITORY_ROOT / metadata["project"]["readme"]).read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("<img", pypi_readme)
+        self.assertNotIn("assets/", pypi_readme)
+        self.assertFalse(any("\u4e00" <= character <= "\u9fff" for character in pypi_readme))
 
     def test_public_tree_contains_only_production_material(self) -> None:
         tracked = subprocess.run(
@@ -46,6 +54,38 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
 
         english_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertFalse(any("\u4e00" <= character <= "\u9fff" for character in english_readme))
+
+    def test_public_readme_uses_a_repository_relative_hero(self) -> None:
+        english_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        chinese_readme = (REPOSITORY_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        for readme in (english_readme, chinese_readme):
+            self.assertIn('src="assets/datajig-hero.png"', readme)
+            self.assertNotIn("raw.githubusercontent.com", readme)
+
+    def test_workflows_pin_node_24_official_actions(self) -> None:
+        workflows = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml"))
+        )
+
+        expected = {
+            "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",  # v5
+            "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",  # v6
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",  # v7
+            "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",  # v7
+        }
+        legacy = {
+            "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+        }
+
+        for action in expected:
+            self.assertIn(action, workflows)
+        for action in legacy:
+            self.assertNotIn(action, workflows)
 
 
 def forbidden_public_path(path: str) -> bool:

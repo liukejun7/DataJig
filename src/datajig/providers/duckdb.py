@@ -111,7 +111,7 @@ def _implementation_version() -> str:
     try:
         return metadata.version("datajig")
     except metadata.PackageNotFoundError:
-        return "0.6.0"
+        return "0+unknown"
 
 
 def _probe() -> dict[str, object]:

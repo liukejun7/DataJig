@@ -1,12 +1,12 @@
 # DataJig
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/liukejun7/DataJig/main/assets/datajig-hero.png" alt="DataJig aligns dataset changes into a verified revision" width="100%">
+  <img src="assets/datajig-hero.png" alt="DataJig aligns dataset changes into a verified revision" width="100%">
 </p>
 
 <p align="center">
-  <strong>The agent-native data supply chain from raw datasets to verified training input.</strong><br>
-  Import, prepare, review, version, export, and verify—without losing identity between steps.
+  <strong>The agent-native data control plane for reproducible model training.</strong><br>
+  Turn raw datasets into verified training inputs without losing identity between steps.
 </p>
 
 <p align="center">
@@ -26,92 +26,90 @@
   <a href="https://github.com/liukejun7/DataJig/blob/main/CHANGELOG.md">Changelog</a>
 </p>
 
-DataJig turns raw upstream bytes and an agent's dataset edit into a traceable
-training-data transaction:
+DataJig gives AI agents a safe, auditable path from raw data to model training.
+It wraps data work in explicit plans, deterministic identities, semantic checks,
+immutable revisions, and evidence of which records crossed a verified training
+adapter boundary.
 
 ```text
-pin source → import → prepare → review → seal → export → consume → receipt
-                 └──────────── content-addressed evidence chain ────────────┘
+raw source → pin → prepare/transform → review → seal → export → train
+                └──────── content-addressed evidence ────────┘  └→ receipt
 ```
 
-It is not another Git, DVC, or Oxen replacement. DataJig sits above storage and
-processing tools to control the moment an agent changes data—and to hand training
-code identity-pinned, integrity-checked records. Every task, candidate, review,
-accepted revision, subset, and training bundle receives a deterministic identity.
-Stale evidence and out-of-scope mutations fail closed.
+Every task, candidate, review, accepted revision, subset, transform, and training
+bundle receives a deterministic identity. If data changes after review, a plan
+drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.6.0` · local-first · Rust-native control plane · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.6.1` · local-first · Rust-native control plane · CSV, Parquet, JSONL, and ImageFolder
 
-## Why DataJig
+## Where DataJig fits
 
-Agents are good at editing data, but a successful script run does not answer:
+DataJig does not try to replace the engines around it. It makes their work safe
+to delegate to agents and reproducible at the training boundary.
 
-- Which exact dataset bytes did the agent review?
-- Did another process change the files after that review?
-- Was the edit limited to the declared task?
-- Why was this revision accepted?
-- Which records and shard bytes entered training?
+| Layer | Existing tools | DataJig's role |
+| --- | --- | --- |
+| Storage and transfer | Git, DVC, Oxen, lakeFS, object stores | Pin exact upstream bytes and preserve provenance |
+| Data processing | DuckDB, Polars, Spark | Authorize bounded work; bind plans, inputs, outputs, and receipts |
+| Dataset change control | Scripts and human review | Scope agent edits; check semantics; seal immutable revisions |
+| Model training | PyTorch, Hugging Face, custom loaders | Deliver verified shards and record what crossed the adapter boundary |
 
-DataJig answers those questions with a small machine-readable workflow. Full
-artifacts stay on disk; stdout stays bounded for an agent context window.
+The differentiator is the control protocol: bounded JSON, executable
+`next_actions`, version-matched Agent Skills, deterministic `ds_` / `chg_` /
+`rev_` identities, and evidence that can be re-verified independently.
 
-## Quickstart
+## Try it in 60 seconds
 
-Install the stable wheel. It already contains the Rust core:
+The wheel includes the Rust core. No separate Rust toolchain is required.
 
 ```bash
 python -m pip install datajig
+datajig --version
 datajig capabilities
+datajig tutorial ./datajig-tutorial
 ```
 
-Install the optional, exactly pinned DuckDB execution provider when an agent
-needs joins, projections, filters, aggregations, or other bounded SQL transforms:
+The tutorial creates a tiny dataset, runs one reviewed change, seals an immutable
+revision, exports a training bundle, and returns the exact verification action.
+Every response is bounded JSON designed for both humans and agents.
+
+Add the exactly pinned DuckDB provider for joins, projections, filters, and
+aggregations:
 
 ```bash
 python -m pip install 'datajig[duckdb]'
 ```
 
-Run the complete workflow once without preparing any input files:
+## One evidence chain, end to end
 
-```bash
-datajig tutorial ./datajig-tutorial
-```
+| Stage | What DataJig guarantees |
+| --- | --- |
+| Import | A branch or tag resolves once to an immutable Hugging Face commit and verified file set |
+| Inspect | Schema, missingness, record identity, and source identity without leaking cell values |
+| Prepare | Deterministic CSV, Parquet, or JSONL recipes with predicted output identity |
+| Transform | Rust-authorized SQL over staged aliases with bounded DuckDB resources |
+| Review | Task-scoped semantic findings and stale-evidence detection |
+| Version | Content-addressed, immutable revisions with transform provenance |
+| Export | Deterministic subsets, splits, and shards for training |
+| Consume | Runtime verification plus an at-least-once receipt for the adapter boundary |
 
-The command requires a new destination and creates a tiny keyed JSONL dataset,
-an immutable workspace, one reviewed and sealed agent change, and a verified
-training bundle. Its bounded JSON response contains every resulting identity
-and the exact `export-info` verification action.
+## Install the Agent contract in a repository
 
 Discovery responses expose a deterministic `agent_contract_id` covering the
-command catalog and input artifact schemas. Pin it in Agent or CI integrations
-when an unreviewed protocol change must fail closed; generated Agent Skills
-record the same identity.
-
-Install that contract into any Git worktree with one command:
+command catalog and artifact schemas. Install the version-matched contract,
+pre-commit guard, and SHA-pinned CI workflow with one command:
 
 ```bash
 datajig repository-install --root .
 datajig repository-check --root .
 ```
 
-This creates a version-matched Agent Skill, a SHA-pinned GitHub Actions workflow,
-an executable pre-commit hook, and `.datajig-repository.json` as the final
-content-addressed commit point. The lock binds the exact DataJig version, Agent
-contract, managed bytes, enabled components, and repository-relative workspace
-states. Installation is idempotent and crash-recoverable; it refuses unknown or
-locally modified targets, conflicting `core.hooksPath` values, symlinks, hard
-links, and upgrades that silently remove a component or state binding.
+Installation is idempotent and crash-recoverable. Unknown files, modified
+managed assets, conflicting hooks, symlinks, hard links, and silent component
+removal are rejected instead of overwritten. `repository-check` is read-only
+and fails on protocol, file, or bound-workspace drift.
 
-`repository-check` is read-only. It fails on protocol or file drift and verifies
-that every bound workspace still matches a clean dataset HEAD. In a fresh CI
-clone, use `--ci` to skip only the clone-local `core.hooksPath` assertion; all
-content and workspace checks remain active. Optional components can be omitted
-at first install with `--no-hook` or `--no-github-actions`. Add repeatable
-`--state .datajig` bindings when those workspace directories are materialized
-in every environment that runs the generated check, including CI; DataJig does
-not upload or restore ignored workspace state implicitly.
-
-Start with the same privacy-safe command for JSONL, CSV, or flat Parquet:
+## Start with any supported local source
 
 ```bash
 datajig inspect data/papers.jsonl --id-field paper_id
@@ -120,14 +118,9 @@ datajig inspect data/papers.parquet --id-field paper_id
 ```
 
 `inspect` reports schema, row and missing-value counts, stable source identity,
-and ID health without printing cell values or raw IDs. For CSV and Parquet it
-also returns an editable preparation recipe template and a `prepare-plan` next
-action. For JSONL it recommends workspace initialization when the file is ready.
-
-CSV and flat Parquet are native inspection and deterministic preparation
-inputs. The task-scoped transactional workspace currently operates on keyed
-JSONL, so tabular sources are prepared into JSONL before change control. XLSX
-and direct database/Hive/Spark connectors are not native adapters yet.
+and ID health without printing cell values or raw IDs. CSV and flat Parquet are
+prepared deterministically into keyed JSONL before transactional change control.
+XLSX and direct database, Hive, and Spark adapters are not native yet.
 
 Compare two keyed JSONL revisions without creating a workspace:
 
@@ -137,9 +130,8 @@ datajig record-diff baseline/papers.jsonl data/papers.jsonl \
 ```
 
 `record-diff` aligns records by ID and distinguishes added, removed, modified,
-and moved records.
-
-For ImageFolder datasets, generate a self-contained review:
+and moved records. ImageFolder datasets can produce a self-contained visual
+review:
 
 ```bash
 datajig compare baseline/ candidate/ \

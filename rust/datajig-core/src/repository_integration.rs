@@ -855,7 +855,7 @@ fn is_executable(_path: &Path) -> Result<bool> {
 
 pub fn render_repository_workflow() -> Vec<u8> {
     format!(
-        "name: DataJig\n\n'on':\n  pull_request:\n  push:\n    branches:\n      - main\n\npermissions:\n  contents: read\n\njobs:\n  datajig:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065\n        with:\n          python-version: '3.11'\n      - name: Install DataJig\n        run: python -m pip install \"datajig=={}\"\n      - name: Verify DataJig repository integration\n        run: datajig repository-check --root . --ci\n",
+        "name: DataJig\n\n'on':\n  pull_request:\n  push:\n    branches:\n      - main\n\npermissions:\n  contents: read\n\njobs:\n  datajig:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09\n      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1\n        with:\n          python-version: '3.11'\n      - name: Install DataJig\n        run: python -m pip install \"datajig=={}\"\n      - name: Verify DataJig repository integration\n        run: datajig repository-check --root . --ci\n",
         python_package_version()
     )
     .into_bytes()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import unittest
+from importlib.metadata import version
 from pathlib import Path
 
 from cli_harness import REPOSITORY_ROOT
@@ -54,6 +55,23 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("transform-plan", completed.stdout)
         self.assertIn("transform-apply", completed.stdout)
         self.assertIn("transform-info", completed.stdout)
+
+    def test_top_level_version_matches_installed_package_metadata(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        completed = subprocess.run(
+            ("python", "-m", "datajig.cli", "--version"),
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(f"datajig {version('datajig')}\n", completed.stdout)
+        self.assertEqual("", completed.stderr)
 
 
 if __name__ == "__main__":
