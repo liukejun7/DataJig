@@ -321,7 +321,11 @@ fn provider() -> TransformProviderIdentity {
 
 fn write_provider_script(root: &Path, name: &str, body: &str) -> PathBuf {
     let path = root.join(name);
-    fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+    fs::write(
+        &path,
+        format!("#!/bin/sh\ndd of=/dev/null 2>/dev/null\n{body}"),
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
