@@ -3,6 +3,34 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-10-06
+
+### Added
+
+- Optional `datajig[duckdb]` execution provider, exactly pinned to DuckDB 1.5.6,
+  for bounded transforms over explicit CSV, flat Parquet, and JSONL aliases.
+- `transform-plan`, `transform-apply`, and read-only `transform-info` workflows
+  with deterministic `xform_...` plans, explicit authorization, drift checks,
+  recoverable no-clobber publication, and `xformed_...` receipts.
+- Rust-owned SQL AST authorization that permits one bounded SELECT and denies
+  arbitrary file/table functions, undeclared relations, COPY, ATTACH, extension
+  loading, network access, multiple statements, and volatile functions.
+- Independent Rust verification of provider output schema, supported scalar
+  types, canonical JSONL bytes, unique non-null IDs, limits, and predicted
+  content identity.
+- Revision schema 3 transform lineage binding the verified plan, provider,
+  sources, query, parameters, receipt, and output into workspace history.
+- Machine-readable transform command descriptors, artifact schemas,
+  capabilities, resource limits, Agent Skill guidance, and actionable optional
+  provider installation errors.
+
+### Changed
+
+- The Python entrypoint now binds its active interpreter only for native
+  transform commands and strips inherited provider-executable overrides.
+- `init` accepts `--source-receipt` and re-verifies the receipt, output bytes,
+  and ID field before creating any workspace state.
+
 ## [0.5.1] - 2026-10-06
 
 ### Added

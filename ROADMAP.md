@@ -22,13 +22,16 @@ without weakening review, reproducibility, or recovery.
 - one-command repository installation for the version-matched Agent Skill,
   content-addressed lock, Git hook, and SHA-pinned CI verification, with
   fail-closed drift and clean-workspace checks.
+- bounded DuckDB transforms over explicit CSV, Parquet, and JSONL aliases, with
+  Rust AST authorization, plan/apply consent, canonical JSONL verification,
+  provenance receipts, and revision-bound lineage.
 
 ## Near term
 
 1. Stronger policy templates for leakage, licensing, schema drift, and
    training-readiness gates.
-2. Arrow batch execution, joins, dataset-wide numeric transforms, and
-   multi-record patch sets while preserving plan/apply determinism.
+2. Arrow batch interchange, richer SQL type coverage, and multi-record patch
+   sets while preserving the shipped transform plan/apply boundary.
 3. Experiment-system receipt attachment and multi-host consumption evidence.
 
 ## Source and version adapters

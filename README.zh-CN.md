@@ -24,7 +24,7 @@ DataJig 把上游原始 bytes 和 Agent 的一次数据修改变成可追溯训�
 任务、候选、审查、接受的 revision、数据子集和训练 bundle 都有确定性身份；
 证据过期或混入计划外修改时会拒绝继续。
 
-> 版本 `0.5.1` · 本地优先 · Rust 原生内核 · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.6.0` · 本地优先 · Rust 原生控制平面 · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## 为什么需要 DataJig
 
@@ -46,6 +46,12 @@ stdout 只返回适合 Agent 上下文窗口的有界 JSON。
 ```bash
 python -m pip install datajig
 datajig capabilities
+```
+
+需要 join、筛选、聚合等 SQL 处理时，安装精确锁定版本的可选 DuckDB provider：
+
+```bash
+python -m pip install 'datajig[duckdb]'
 ```
 
 无需准备输入文件，先用一条命令实际跑完整流程：
@@ -222,6 +228,55 @@ Plan 会绑定源文件 bytes 或 `hfimport_...` receipt、选中 shard 的路�
 `filter`、`select`、`rename`、`cast`、`trim`、`case`、`replace`、
 `fill_missing`、`drop_missing` 和 `dedupe`。缺失值指 JSON `null` 或空字符串；若要
 把纯空白单元格视为缺失值，应先执行 `trim`。`drop_missing` 支持 `any` 与 `all` 模式。
+
+## 执行有边界的 SQL transform
+
+DuckDB 只负责计算；SQL 授权、输入快照、资源限制、确定性身份、规范 JSONL、原子发布
+和 lineage 都由 Rust 内核控制。查询只能是一条针对显式 alias 的 `SELECT`：
+
+```sql
+SELECT paper_id, title, score
+FROM papers
+WHERE score >= ?
+ORDER BY paper_id
+```
+
+把参数保存为 `params.json`（例如 `[0.8]`），先针对 CSV 或 Parquet 生成计划：
+
+```bash
+datajig transform-plan \
+  --input papers=data/papers.csv \
+  --sql transforms/high-score.sql \
+  --params transforms/params.json \
+  --id-field paper_id \
+  --output data/high-score.jsonl \
+  --plan artifacts/high-score.transform.json
+
+# Parquet 只需改为：--input papers=data/papers.parquet
+```
+
+检查有界 preview 后，授权返回的精确 `xform_...` 身份，并把 receipt 绑定进初始 revision：
+
+```bash
+datajig transform-apply artifacts/high-score.transform.json \
+  --accept-plan xform_...
+datajig transform-info \
+  data/high-score.jsonl.datajig.transform.json --verify
+datajig init data/high-score.jsonl \
+  --id-field paper_id \
+  --source-receipt data/high-score.jsonl.datajig.transform.json
+```
+
+Rust 会先解析 SQL AST，拒绝表函数与任意文件读取、`COPY`、`ATTACH`、扩展加载、
+网络访问、多语句、未声明 relation 和非白名单/易变函数。多行输出的顶层 `ORDER BY`
+必须以 ID 字段结尾，ID 必须非空且唯一。Plan 会锁定 provider 与 DuckDB 版本、输入
+content ID、精确 SQL/参数、预测输出和所有资源上限；apply 会重新执行并逐项验证。
+
+协议 v1 最多允许 16 个输入、200 万输入/输出行、512 MiB 输入/输出、256 个字段和
+参数、64 KiB SQL/参数 JSON、512 MiB DuckDB 内存与 15 分钟执行时间。实际安装值以
+`datajig capabilities` 为准。失败不会留下公开半成品；缺 provider 时直接给出安装
+命令，source 漂移或授权不匹配会明确拒绝，精确重试可恢复或返回已验证结果。
+`transform-info --verify` 不执行 SQL，因此没有安装 DuckDB 也能验证已发布 receipt。
 
 ## 保护一次 Agent 修改
 

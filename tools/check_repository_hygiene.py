@@ -38,9 +38,15 @@ def forbidden_path(path: str) -> bool:
         return False
     if parts[0] in FORBIDDEN_ROOTS or path == "uv.lock":
         return True
-    if path.startswith("rust/target/") or path.endswith((".pyc", ".pyo")):
+    lowered = path.lower()
+    if path.startswith("rust/target/") or path.endswith((".pyc", ".pyo", ".whl")):
         return True
-    return "__pycache__" in parts or any(part.endswith(".egg-info") for part in parts)
+    return (
+        "__pycache__" in parts
+        or any(part.endswith(".egg-info") for part in parts)
+        or "implementation-plan" in lowered
+        or lowered.endswith("/progress.md")
+    )
 
 
 def configured_email() -> str:

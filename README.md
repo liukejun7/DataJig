@@ -40,7 +40,7 @@ code identity-pinned, integrity-checked records. Every task, candidate, review,
 accepted revision, subset, and training bundle receives a deterministic identity.
 Stale evidence and out-of-scope mutations fail closed.
 
-> Version `0.5.1` · local-first · Rust-native core · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.6.0` · local-first · Rust-native control plane · CSV, Parquet, JSONL, and ImageFolder
 
 ## Why DataJig
 
@@ -62,6 +62,13 @@ Install the stable wheel. It already contains the Rust core:
 ```bash
 python -m pip install datajig
 datajig capabilities
+```
+
+Install the optional, exactly pinned DuckDB execution provider when an agent
+needs joins, projections, filters, aggregations, or other bounded SQL transforms:
+
+```bash
+python -m pip install 'datajig[duckdb]'
 ```
 
 Run the complete workflow once without preparing any input files:
@@ -277,6 +284,89 @@ Recipe v1 supports ordered `filter`, `select`, `rename`, `cast`, `trim`, `case`,
 `replace`, `fill_missing`, `drop_missing`, and `dedupe` steps. Missing means
 JSON `null` or an empty string; trim first when whitespace-only cells should be
 treated as missing. `drop_missing` supports `any` and `all` modes.
+
+## Run a bounded SQL transform
+
+Use DuckDB for computation while DataJig remains authoritative for SQL
+authorization, input snapshots, limits, identity, canonical JSONL, publication,
+and provenance. Install the optional provider, then write one SELECT query:
+
+```sql
+SELECT paper_id, title, score
+FROM papers
+WHERE score >= ?
+ORDER BY paper_id
+```
+
+Store the scalar parameter array in `params.json`:
+
+```json
+[0.8]
+```
+
+Plan against a local CSV without publishing the output:
+
+```bash
+datajig transform-plan \
+  --input papers=data/papers.csv \
+  --sql transforms/high-score.sql \
+  --params transforms/params.json \
+  --id-field paper_id \
+  --output data/high-score.jsonl \
+  --plan artifacts/high-score.transform.json
+```
+
+For Parquet, change only the explicit input path:
+
+```bash
+datajig transform-plan \
+  --input papers=data/papers.parquet \
+  --sql transforms/high-score.sql \
+  --params transforms/params.json \
+  --id-field paper_id \
+  --output data/high-score.jsonl \
+  --plan artifacts/high-score.transform.json
+```
+
+Review the bounded preview, then authorize the exact `xform_...` identity:
+
+```bash
+datajig transform-apply artifacts/high-score.transform.json \
+  --accept-plan xform_...
+
+datajig transform-info \
+  data/high-score.jsonl.datajig.transform.json --verify
+
+datajig init data/high-score.jsonl \
+  --id-field paper_id \
+  --source-receipt data/high-score.jsonl.datajig.transform.json
+```
+
+The resulting revision binds the transform plan, provider and DuckDB versions,
+source aliases and content IDs, exact SQL and scalar parameters, canonical
+output identity, and verified receipt. Planning and apply both execute in a
+private staging area. Apply rechecks every source and plan field, reruns the
+query, verifies the predicted bytes, and publishes the output and receipt with
+recoverable no-clobber transactions.
+
+The Rust core parses SQL into an AST before DuckDB sees it. The v1 policy allows
+one `SELECT` over declared aliases and scalar parameters. It rejects table
+functions and arbitrary file access, `COPY`, `ATTACH`, extension loading,
+network access, multiple statements, unknown or volatile functions, and
+undeclared relations. Multi-row output must end its top-level `ORDER BY` with
+the ID field. Output supports null, boolean, signed and unsigned integer,
+finite double, and UTF-8 string values; IDs must be non-null and unique.
+
+Protocol v1 allows at most 16 inputs, 2,000,000 source and output rows, 512 MiB
+of source and output bytes, 256 output fields and parameters, 64 KiB of SQL and
+parameter JSON, 512 MiB of DuckDB memory, and 15 minutes of wall time. Query the
+installed values with `datajig capabilities`; agents should not hard-code them.
+
+Failures are bounded and leave no public partial output. Missing provider errors
+include `pip install 'datajig[duckdb]'`; stale sources return transform drift;
+an authorization mismatch rejects the apply; an exact retry recovers or returns
+the existing verified result. `transform-info --verify` never executes SQL and
+can validate a published receipt even when DuckDB is not installed.
 
 ## Protect an agent edit
 

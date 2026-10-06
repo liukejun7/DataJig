@@ -11,7 +11,7 @@ local files / Hugging Face dataset repositories
        source adapters and immutable plans
                     │
                     ▼
-        inspection and deterministic prepare
+   inspection, recipes, and bounded SQL transforms
                     │
                     ▼
        task workspace → preview → apply → check
@@ -33,7 +33,8 @@ substitute a moving branch, stale evidence, or a different output.
 
 Identities form a provenance chain rather than a mutable label. Examples include
 `hfplan_...` and `hfimport_...` for source acquisition, `prep_...` for tabular
-preparation, `changeset_...` and `review_...` inside a task workspace, `rev_...`
+preparation, `xform_...` and `xformed_...` for SQL authorization and execution,
+`changeset_...` and `review_...` inside a task workspace, `rev_...`
 for accepted data, `view_...` for a deterministic subset, and `bundle_...` for a
 training handoff.
 
@@ -46,6 +47,8 @@ Important failure boundaries are fail-closed:
 - review evidence is rejected when the underlying bytes have changed;
 - new outputs are staged next to their destination, verified, synced, and
   atomically published without replacing an existing path;
+- SQL is AST-authorized by Rust before a separately installed DuckDB provider
+  can execute it against private, explicitly aliased input snapshots;
 - agent-facing JSON, pagination, file counts, byte counts, and path lengths are
   bounded;
 - authentication secrets are read through standard Hugging Face configuration
@@ -69,7 +72,8 @@ DataJig owns the behavior that must remain stable across engines:
 
 It deliberately integrates existing engines where replacement would add no
 trust value: Hugging Face transports source bytes, Parquet libraries decode
-columnar data, and PyTorch or Hugging Face Datasets consumes verified bundles.
+columnar data, DuckDB executes bounded relational transforms, and PyTorch or
+Hugging Face Datasets consumes verified bundles.
 DataJig is not a replacement for Git, Oxen, DVC, object storage, or a training
 orchestrator. Those systems move, retain, or train on data; DataJig controls and
 proves the transitions between them.
@@ -85,6 +89,23 @@ BLAKE3 hashes before writing `datajig.hf-import.json`.
 Future adapters for object stores and data-versioning systems should reuse the
 same contract instead of leaking provider-specific mutable state into downstream
 preparation or training.
+
+## Transform provider boundary
+
+The optional Python DuckDB provider is an execution engine, not a policy
+authority. The active DataJig Python entrypoint binds its own interpreter to the
+Rust core through a private environment variable; users cannot select an
+arbitrary provider executable. Rust parses one SELECT into an AST, restricts
+relations to declared aliases, rejects statement and file-access escape routes,
+and serializes a bounded request. The provider receives private input snapshots
+and an output path inside a DataJig sandbox, disables external access and
+extensions, applies memory/thread/time bounds, and streams result batches.
+
+Rust independently verifies the result schema, scalar types, canonical JSONL,
+unique non-null IDs, row and byte bounds, and predicted content identity. Only
+then may apply publish the output and `xformed_...` receipt. Workspace
+initialization re-verifies that receipt and the live output before embedding the
+plan, provider, source, query, and output evidence in revision schema 3.
 
 ## Platform boundary
 
