@@ -96,6 +96,172 @@ class TransformCliBindingTests(unittest.TestCase):
 
 
 class TransformCliWorkflowTests(DataJigCliTestCase):
+    def test_inline_parameters_are_bound_without_being_treated_as_a_path(self) -> None:
+        source = self.root / "events.csv"
+        source.write_text("id,value\na,1\nb,2\n", encoding="utf-8")
+        output = self.root / "prepared.jsonl"
+        plan = self.root / "transform-plan.json"
+
+        planned = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id, value FROM events WHERE value = ? ORDER BY id",
+            "--params",
+            '["2"]',
+            "--id-field",
+            "id",
+            "--output",
+            output,
+            "--plan",
+            plan,
+        ).payload["artifact"]
+        self.run_cli("transform-apply", plan, "--accept-plan", planned["plan_id"])
+
+        self.assertEqual(
+            [{"id": "b", "value": "2"}],
+            [json.loads(line) for line in output.read_text().splitlines()],
+        )
+
+    def test_parameter_file_is_explicit_and_mutually_exclusive_with_inline_json(self) -> None:
+        source = self.root / "events.csv"
+        source.write_text("id,value\na,1\nb,2\n", encoding="utf-8")
+        parameters = self.root / "params.json"
+        parameters.write_text('["1"]', encoding="utf-8")
+        plan = self.root / "transform-plan.json"
+
+        self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id, value FROM events WHERE value = ? ORDER BY id",
+            "--params-file",
+            parameters,
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "prepared.jsonl",
+            "--plan",
+            plan,
+        ).payload["artifact"]
+
+        plan_document = json.loads(plan.read_text(encoding="utf-8"))
+        self.assertTrue(plan_document["parameter_content_id"].startswith("params_"))
+        conflict = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id FROM events WHERE value = ? ORDER BY id",
+            "--params",
+            '["1"]',
+            "--params-file",
+            parameters,
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "conflict.jsonl",
+            "--plan",
+            self.root / "conflict-plan.json",
+            expected_returncode=2,
+        ).payload
+        self.assertEqual("INVALID_ARGUMENT", conflict["error"]["code"])
+
+    def test_source_row_limit_exposes_machine_readable_details(self) -> None:
+        source = self.root / "too-many.csv"
+        with source.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write("id,value\n")
+            for index in range(2_000_001):
+                stream.write(f"{index},x\n")
+
+        failed = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id, value FROM events ORDER BY id",
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "prepared.jsonl",
+            "--plan",
+            self.root / "transform-plan.json",
+            expected_returncode=2,
+        ).payload
+
+        self.assertEqual("SOURCE_LIMIT_EXCEEDED", failed["error"]["code"])
+        self.assertEqual(
+            {
+                "metric": "source_rows",
+                "observed": 2_000_001,
+                "observed_is_lower_bound": True,
+                "limit": 2_000_000,
+                "unit": "rows",
+            },
+            failed["error"]["details"],
+        )
+
+    def test_output_field_limit_exposes_machine_readable_details(self) -> None:
+        source = self.root / "wide.csv"
+        fields = ["id", *(f"value_{index}" for index in range(256))]
+        source.write_text(
+            ",".join(fields) + "\n" + ",".join(["row-1", *("x" for _ in range(256))]) + "\n",
+            encoding="utf-8",
+        )
+
+        failed = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"wide={source}",
+            "--sql",
+            "SELECT * FROM wide ORDER BY id",
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "prepared.jsonl",
+            "--plan",
+            self.root / "transform-plan.json",
+            expected_returncode=2,
+        ).payload
+
+        self.assertEqual("OUTPUT_LIMIT_EXCEEDED", failed["error"]["code"])
+        self.assertEqual(
+            {
+                "metric": "output_fields",
+                "observed": 257,
+                "observed_is_lower_bound": False,
+                "limit": 256,
+                "unit": "fields",
+            },
+            failed["error"]["details"],
+        )
+
+    def test_large_inline_parameter_array_reports_the_contract_not_a_path_error(self) -> None:
+        source = self.root / "events.csv"
+        source.write_text("id,value\na,1\n", encoding="utf-8")
+        failed = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id, value FROM events ORDER BY id",
+            "--params",
+            json.dumps(list(range(257))),
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "prepared.jsonl",
+            "--plan",
+            self.root / "transform-plan.json",
+            expected_returncode=2,
+        ).payload
+
+        self.assertEqual("INVALID_ARGUMENT", failed["error"]["code"])
+        self.assertIn("at most 256 JSON scalars", failed["error"]["message"])
+        self.assertNotIn("File name too long", failed["error"]["message"])
+
     def test_mixed_newline_csv_round_trip_preserves_raw_source_bytes(self) -> None:
         source = self.root / "mixed.csv"
         raw = b'id,text\r\n1,"hello\nworld"\r\n2,plain\n3,"crlf\r\ninside"\r\n'

@@ -3,6 +3,25 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.2] - 2026-10-06
+
+### Added
+
+- `transform-plan --params <JSON_ARRAY>` for direct scalar parameter binding,
+  plus explicit `--params-file <PATH>` input for reusable parameter documents.
+- Machine-readable transform limit details with metric, observed value,
+  lower-bound semantics, configured limit, and unit.
+- Parallel real-data CI shards, Python 3.11–3.13 workflow compatibility tests,
+  and installed-wheel tutorial verification on every release platform.
+- Idempotent GitHub Release creation with automatic attachment of all four
+  verified platform wheels.
+
+### Fixed
+
+- Inline transform parameters are no longer interpreted as filesystem paths,
+  avoiding misleading missing-file and file-name-too-long failures.
+- Pipeline transforms now use the explicit parameter-file contract.
+
 ## [0.8.1] - 2026-10-06
 
 ### Added

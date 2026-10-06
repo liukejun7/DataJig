@@ -38,7 +38,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.8.1` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.8.2` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -356,13 +356,17 @@ Store the scalar parameter array in `params.json`:
 [0.8]
 ```
 
+For one-off calls, pass the same array inline with `--params '[0.8]'`.
+Use `--params-file` only when the JSON lives in a file; the two options are
+mutually exclusive.
+
 Plan against a local CSV without publishing the output:
 
 ```bash
 datajig transform-plan \
   --input papers=data/papers.csv \
   --sql-file transforms/high-score.sql \
-  --params transforms/params.json \
+  --params-file transforms/params.json \
   --id-field paper_id \
   --output data/high-score.jsonl \
   --plan artifacts/high-score.transform.json
@@ -374,7 +378,7 @@ For Parquet, change only the explicit input path:
 datajig transform-plan \
   --input papers=data/papers.parquet \
   --sql-file transforms/high-score.sql \
-  --params transforms/params.json \
+  --params-file transforms/params.json \
   --id-field paper_id \
   --output data/high-score.jsonl \
   --plan artifacts/high-score.transform.json

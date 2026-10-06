@@ -96,11 +96,18 @@ class _Connection(_Cursor, Protocol):
 
 
 class ProviderError(Exception):
-    def __init__(self, code: str, message: str, remediation: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        remediation: str,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.remediation = remediation
+        self.details = dict(details) if details is not None else None
 
 
 def _import_duckdb() -> ModuleType:
@@ -312,8 +319,20 @@ def _stream_result(
     max_fields: int = 256,
 ) -> dict[str, object]:
     description = cursor.description
-    if description is None or not description or len(description) > max_fields:
+    if description is None or not description:
         _fail("OUTPUT_SCHEMA_INVALID", "The transform output schema is empty or too wide.")
+    if len(description) > max_fields:
+        _fail(
+            "OUTPUT_LIMIT_EXCEEDED",
+            f"The transform output has {len(description)} fields > limit {max_fields} fields.",
+            details={
+                "metric": "output_fields",
+                "observed": len(description),
+                "observed_is_lower_bound": False,
+                "limit": max_fields,
+                "unit": "fields",
+            },
+        )
     names: list[str] = []
     wire_types: list[str] = []
     schema: list[dict[str, object]] = []
@@ -372,10 +391,32 @@ def _stream_result(
                     )
                     rows += 1
                     written += len(encoded)
-                    if rows > max_rows or written > max_bytes:
+                    if rows > max_rows:
                         _fail(
                             "OUTPUT_LIMIT_EXCEEDED",
-                            "The transform output exceeds its declared limits.",
+                            (
+                                "The transform output contains at least "
+                                f"{rows} rows > limit {max_rows} rows."
+                            ),
+                            details={
+                                "metric": "output_rows",
+                                "observed": rows,
+                                "observed_is_lower_bound": True,
+                                "limit": max_rows,
+                                "unit": "rows",
+                            },
+                        )
+                    if written > max_bytes:
+                        _fail(
+                            "OUTPUT_LIMIT_EXCEEDED",
+                            f"The transform output is {written} bytes > limit {max_bytes} bytes.",
+                            details={
+                                "metric": "output_bytes",
+                                "observed": written,
+                                "observed_is_lower_bound": True,
+                                "limit": max_bytes,
+                                "unit": "bytes",
+                            },
                         )
                     output.write(encoded)
             output.flush()
@@ -682,6 +723,7 @@ def _is_scalar(value: object) -> bool:
 
 
 def _error_response(correlation_id: str, error: ProviderError) -> dict[str, object]:
+    details = error.details
     return {
         "protocol": PROTOCOL,
         "protocol_version": PROTOCOL_VERSION,
@@ -691,6 +733,7 @@ def _error_response(correlation_id: str, error: ProviderError) -> dict[str, obje
             "code": error.code,
             "message": error.message,
             "remediation": error.remediation,
+            **({"details": details} if details is not None else {}),
         },
     }
 
@@ -699,8 +742,10 @@ def _fail(
     code: str,
     message: str,
     remediation: str = "Regenerate the transform request.",
+    *,
+    details: Mapping[str, object] | None = None,
 ) -> NoReturn:
-    raise ProviderError(code, message, remediation)
+    raise ProviderError(code, message, remediation, details)
 
 
 if __name__ == "__main__":

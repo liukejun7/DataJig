@@ -302,6 +302,16 @@ impl Error for UndoNotFoundError {}
 pub struct InvalidArgumentError {
     message: String,
     remediation: Option<RemediationAction>,
+    limit_details: Option<TransformLimitDetails>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransformLimitDetails {
+    metric: &'static str,
+    observed: u64,
+    observed_is_lower_bound: bool,
+    limit: u64,
+    unit: &'static str,
 }
 
 #[derive(Clone, Debug)]
@@ -316,6 +326,7 @@ impl InvalidArgumentError {
         Self {
             message: message.into(),
             remediation: None,
+            limit_details: None,
         }
     }
 
@@ -333,8 +344,68 @@ impl InvalidArgumentError {
         self
     }
 
+    pub(crate) fn with_limit_details(
+        mut self,
+        metric: &'static str,
+        observed: u64,
+        observed_is_lower_bound: bool,
+        limit: u64,
+        unit: &'static str,
+    ) -> Self {
+        self.limit_details = Some(TransformLimitDetails::new(
+            metric,
+            observed,
+            observed_is_lower_bound,
+            limit,
+            unit,
+        ));
+        self
+    }
+
     pub fn remediation(&self) -> Option<&RemediationAction> {
         self.remediation.as_ref()
+    }
+
+    pub fn limit_details(&self) -> Option<&TransformLimitDetails> {
+        self.limit_details.as_ref()
+    }
+}
+
+impl TransformLimitDetails {
+    pub(crate) fn new(
+        metric: &'static str,
+        observed: u64,
+        observed_is_lower_bound: bool,
+        limit: u64,
+        unit: &'static str,
+    ) -> Self {
+        Self {
+            metric,
+            observed,
+            observed_is_lower_bound,
+            limit,
+            unit,
+        }
+    }
+
+    pub fn metric(&self) -> &str {
+        self.metric
+    }
+
+    pub fn observed(&self) -> u64 {
+        self.observed
+    }
+
+    pub fn observed_is_lower_bound(&self) -> bool {
+        self.observed_is_lower_bound
+    }
+
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    pub fn unit(&self) -> &str {
+        self.unit
     }
 }
 

@@ -8,9 +8,9 @@ It wraps data work in explicit plans, deterministic identities, semantic checks,
 immutable revisions, and evidence of which records crossed a verified training
 adapter boundary.
 
-Version 0.8.1 adds mixed-newline CSV handling, quantified transform diagnostics,
-discoverable preparation recipes, and fail-closed atomic updates for eligible
-fixed delivery paths.
+Version 0.8.2 adds unambiguous inline and file-based transform parameters,
+machine-readable limit details, broader parallel CI coverage, real-data wheel
+smoke tests, and automatic GitHub Release assets.
 
 ```text
 raw source -> pin -> prepare/transform -> review -> seal -> export -> train

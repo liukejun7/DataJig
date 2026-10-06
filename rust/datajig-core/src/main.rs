@@ -10,13 +10,14 @@ use datajig_core::{
     RepositoryComponents, RepositoryConflictError, RevisionContentCorruptError,
     RevisionContentUnavailableError, Severity, StaleConsumptionInputError, StalePrepareInputError,
     TrainingExportConfig, TransformDriftError, TransformInputSpec, TransformNotAuthorizedError,
-    TransformProviderExecutionError, TransformProviderProtocolError, TransformProviderTimeoutError,
-    TransformSourceFormat, UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError,
-    WorkspaceLock, WorkspaceStore, agent_contract_id, apply_hf_import, apply_jsonl_patch,
-    apply_prepare, artifact_schema, artifact_schema_names, begin_changeset, check_changeset,
-    check_repository, check_subset_view, check_workspace, command_catalog, command_descriptor,
-    command_names, compact_summary, compare_and_swap_workspace_head, create_inventory,
-    create_review, create_snapshot, diff_jsonl_records, diff_manifests, draft_jsonl_patch,
+    TransformOutputError, TransformOutputErrorKind, TransformProviderExecutionError,
+    TransformProviderProtocolError, TransformProviderTimeoutError, TransformSourceFormat,
+    UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError, WorkspaceLock, WorkspaceStore,
+    agent_contract_id, apply_hf_import, apply_jsonl_patch, apply_prepare, artifact_schema,
+    artifact_schema_names, begin_changeset, check_changeset, check_repository, check_subset_view,
+    check_workspace, command_catalog, command_descriptor, command_names, compact_summary,
+    compare_and_swap_workspace_head, create_inventory, create_review, create_snapshot,
+    diff_jsonl_records, diff_manifests, draft_jsonl_patch,
     export_training_bundle_with_view_at_detached_revision,
     export_training_bundle_with_view_at_revision, get_finding,
     initialize_jsonl_workspace_with_receipt, initialize_workspace, inspect_jsonl, inspect_tabular,
@@ -426,9 +427,12 @@ enum Command {
         /// UTF-8 file containing one SELECT query (maximum 64 KiB).
         #[arg(long, required_unless_present = "sql", conflicts_with = "sql")]
         sql_file: Option<PathBuf>,
-        /// Optional JSON array containing at most 256 scalar positional parameters.
-        #[arg(long)]
-        params: Option<PathBuf>,
+        /// Inline JSON array containing at most 256 scalar positional parameters.
+        #[arg(long, conflicts_with = "params_file", value_name = "JSON_ARRAY")]
+        params: Option<String>,
+        /// UTF-8 file containing the JSON parameter array.
+        #[arg(long, conflicts_with = "params", value_name = "PATH")]
+        params_file: Option<PathBuf>,
         /// Required output record identity field.
         #[arg(long)]
         id_field: String,
@@ -1778,13 +1782,14 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             sql,
             sql_file,
             params,
+            params_file,
             id_field,
             output,
             plan,
         } => {
             let python = transform_provider_python()?;
             let inputs = parse_transform_inputs(&inputs)?;
-            let parameters = load_transform_parameters(params.as_deref())?;
+            let parameters = load_transform_parameters(params.as_deref(), params_file.as_deref())?;
             let sql = load_transform_sql(sql, sql_file.as_deref())?;
             let artifact = plan_transform(datajig_core::TransformPlanRequest {
                 inputs,
@@ -2331,13 +2336,24 @@ fn parse_transform_inputs(values: &[String]) -> Result<Vec<TransformInputSpec>, 
         .collect()
 }
 
-fn load_transform_parameters(path: Option<&std::path::Path>) -> Result<Vec<Value>, CommandError> {
-    let Some(path) = path else {
-        return Ok(Vec::new());
+fn load_transform_parameters(
+    inline: Option<&str>,
+    path: Option<&std::path::Path>,
+) -> Result<Vec<Value>, CommandError> {
+    let payload = match (inline, path) {
+        (Some(value), None) => value.as_bytes().to_vec(),
+        (None, Some(path)) => std::fs::read(path)
+            .map_err(|error| anyhow::anyhow!("cannot read transform parameter file: {error}"))
+            .map_err(|error| ("INVALID_ARGUMENT", 2, error))?,
+        (None, None) => return Ok(Vec::new()),
+        (Some(_), Some(_)) => {
+            return Err((
+                "INVALID_ARGUMENT",
+                2,
+                anyhow::anyhow!("--params and --params-file cannot be used together"),
+            ));
+        }
     };
-    let payload = std::fs::read(path)
-        .map_err(anyhow::Error::from)
-        .map_err(|error| ("INVALID_ARGUMENT", 2, error))?;
     if payload.len() > 65_536 {
         return Err((
             "INVALID_ARGUMENT",
@@ -2496,6 +2512,18 @@ fn transform_command_error(error: anyhow::Error) -> CommandError {
         "PROVIDER_UNAVAILABLE"
     } else if error.downcast_ref::<OutputExistsError>().is_some() {
         "OUTPUT_EXISTS"
+    } else if let Some(output) = error.downcast_ref::<TransformOutputError>() {
+        match output.kind() {
+            TransformOutputErrorKind::OutputLimit => "OUTPUT_LIMIT_EXCEEDED",
+            TransformOutputErrorKind::Schema => "OUTPUT_SCHEMA_INVALID",
+            _ => "TRANSFORM_OUTPUT_INVALID",
+        }
+    } else if error
+        .downcast_ref::<InvalidArgumentError>()
+        .and_then(InvalidArgumentError::limit_details)
+        .is_some_and(|details| details.metric().starts_with("source_"))
+    {
+        "SOURCE_LIMIT_EXCEEDED"
     } else if error.downcast_ref::<InvalidArgumentError>().is_some() {
         "INVALID_ARGUMENT"
     } else {
@@ -2909,6 +2937,38 @@ fn exit_with_error(
             });
             next_actions.push(json!({"command": command, "args": ["--help"]}));
         }
+    }
+    let limit_details = source.and_then(|source| {
+        source
+            .downcast_ref::<InvalidArgumentError>()
+            .and_then(InvalidArgumentError::limit_details)
+            .cloned()
+            .or_else(|| {
+                source
+                    .downcast_ref::<TransformOutputError>()
+                    .and_then(TransformOutputError::limit_details)
+                    .cloned()
+            })
+            .or_else(|| {
+                source
+                    .downcast_ref::<TransformProviderExecutionError>()
+                    .and_then(TransformProviderExecutionError::limit_details)
+                    .cloned()
+            })
+            .or_else(|| {
+                source
+                    .downcast_ref::<TransformProviderTimeoutError>()
+                    .map(TransformProviderTimeoutError::limit_details)
+            })
+    });
+    if let Some(details) = limit_details {
+        error["details"] = json!({
+            "metric": details.metric(),
+            "observed": details.observed(),
+            "observed_is_lower_bound": details.observed_is_lower_bound(),
+            "limit": details.limit(),
+            "unit": details.unit(),
+        });
     }
     eprintln!(
         "{}",
