@@ -39,12 +39,27 @@ def build_parser() -> argparse.ArgumentParser:
         prog="datajig",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Lifecycle: prepare/import -> transform -> version -> review/seal -> "
-            "export -> consume"
+            "Lifecycle: prepare/import -> transform -> version -> review/seal -> export -> consume"
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {_tool_version()}")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    pipeline_parser = subparsers.add_parser(
+        "pipeline", help="plan, apply, recover, and inspect a complete training-data delivery"
+    )
+    pipeline_commands = pipeline_parser.add_subparsers(dest="pipeline_command", required=True)
+    pipeline_plan = pipeline_commands.add_parser(
+        "plan", help="create a deterministic pipeline plan"
+    )
+    pipeline_plan.add_argument("--config", type=Path, required=True)
+    pipeline_plan.add_argument("--plan", type=Path, required=True)
+    pipeline_info = pipeline_commands.add_parser(
+        "info", help="inspect or verify a pipeline artifact"
+    )
+    pipeline_info.add_argument("artifact", type=Path)
+    pipeline_info.add_argument("--format", choices=("json", "markdown"), default="json")
+    pipeline_info.add_argument("--output", type=Path)
+    pipeline_info.add_argument("--verify", action="store_true")
     compare_parser = subparsers.add_parser("compare", help="compare two dataset snapshots")
     compare_parser.add_argument("baseline", type=Path)
     compare_parser.add_argument("candidate", type=Path)
@@ -98,9 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("capabilities", help="describe the machine interface")
 
-    describe_parser = subparsers.add_parser(
-        "describe", help="describe native command contracts"
-    )
+    describe_parser = subparsers.add_parser("describe", help="describe native command contracts")
     describe_parser.add_argument("native_command", nargs="?")
 
     tutorial_parser = subparsers.add_parser(
@@ -137,9 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_info_parser.add_argument("--consumer-plan", action="store_true")
     export_info_parser.add_argument("--expect-bundle")
     export_info_parser.add_argument("--expect-revision")
-    export_info_parser.add_argument(
-        "--require-assurance", choices=("structural", "quality_policy")
-    )
+    export_info_parser.add_argument("--require-assurance", choices=("structural", "quality_policy"))
     export_info_parser.add_argument("--split")
 
     consume_plan_parser = subparsers.add_parser(
@@ -295,19 +306,11 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_apply_parser.add_argument("plan", type=Path)
     prepare_apply_parser.add_argument("--accept-plan", required=True)
 
-    subparsers.add_parser(
-        "transform-plan", help="plan a bounded deterministic DuckDB transform"
-    )
-    subparsers.add_parser(
-        "transform-apply", help="apply one accepted transform plan atomically"
-    )
-    subparsers.add_parser(
-        "transform-info", help="inspect or verify a transform plan or receipt"
-    )
+    subparsers.add_parser("transform-plan", help="plan a bounded deterministic DuckDB transform")
+    subparsers.add_parser("transform-apply", help="apply one accepted transform plan atomically")
+    subparsers.add_parser("transform-info", help="inspect or verify a transform plan or receipt")
 
-    seal_parser = subparsers.add_parser(
-        "seal", help="promote a fresh passing review to last-good"
-    )
+    seal_parser = subparsers.add_parser("seal", help="promote a fresh passing review to last-good")
     seal_parser.add_argument("--state", type=Path, default=Path(".datajig"))
     seal_parser.add_argument("--threads", "--workers", type=int, default=1)
     seal_parser.add_argument("--message", default="Accept dataset revision")
@@ -323,16 +326,12 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--change")
     status_parser.add_argument("--changeset")
 
-    inventory_parser = subparsers.add_parser(
-        "inventory", help="inspect an ImageFolder dataset"
-    )
+    inventory_parser = subparsers.add_parser("inventory", help="inspect an ImageFolder dataset")
     inventory_parser.add_argument("root", type=Path)
     inventory_parser.add_argument("--output", type=Path, required=True)
     inventory_parser.add_argument("--threads", "--workers", type=int, default=1)
 
-    review_parser = subparsers.add_parser(
-        "review", help="create a native semantic review artifact"
-    )
+    review_parser = subparsers.add_parser("review", help="create a native semantic review artifact")
     review_parser.add_argument("before_ref")
     review_parser.add_argument("after_ref")
     review_parser.add_argument("--output", type=Path, required=True)
@@ -419,12 +418,84 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser.parse_args(raw_args)
     except CliArgumentError as exc:
-        if raw_args and raw_args[0] in AGENT_COMMANDS:
+        if raw_args and (raw_args[0] in AGENT_COMMANDS or raw_args[0] == "pipeline"):
             _print_agent_error("INVALID_ARGUMENT", str(exc))
         else:
             print(f"datajig: {exc}", file=sys.stderr)
         return 2
+    if args.command == "pipeline":
+        return _run_pipeline(args)
     return _run_compare(args)
+
+
+def _run_pipeline(args: argparse.Namespace) -> int:
+    from datajig.pipeline import (
+        PipelineError,
+        create_pipeline_plan,
+        envelope,
+        read_pipeline_artifact,
+    )
+
+    try:
+        if args.pipeline_command == "plan":
+            artifact = create_pipeline_plan(args.config, args.plan)
+            payload = envelope(
+                artifact,
+                [f"datajig pipeline apply {args.plan} --accept-plan {artifact['pipeline_id']}"],
+            )
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            return 0
+        artifact = read_pipeline_artifact(args.artifact, verify=args.verify)
+        if args.format == "markdown":
+            pipeline = artifact.get("pipeline")
+            target = artifact.get("target")
+            if not isinstance(pipeline, dict) or not isinstance(target, dict):
+                raise PipelineError("INVALID_PIPELINE_ARTIFACT", "Pipeline plan shape is invalid")
+            rendered = (
+                f"# DataJig Pipeline `{artifact['pipeline_id']}`\n\n"
+                f"- Name: `{pipeline.get('name')}`\n"
+                f"- Mode: `{target.get('mode')}`\n"
+                f"- Bundle specification: `{artifact['bundle_spec_id']}`\n"
+            )
+        else:
+            rendered = (
+                json.dumps(
+                    envelope(artifact), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
+                + "\n"
+            )
+        if args.output:
+            if args.output.exists() or args.output.is_symlink():
+                raise PipelineError("OUTPUT_EXISTS", "Pipeline info destination already exists")
+            args.output.write_text(rendered, encoding="utf-8")
+        else:
+            print(rendered, end="")
+        return 0
+    except PipelineError as exc:
+        _print_pipeline_error(exc)
+        return 2
+
+
+def _print_pipeline_error(exc: object) -> None:
+    from datajig.pipeline import PipelineError
+
+    if not isinstance(exc, PipelineError):
+        raise TypeError("expected PipelineError")
+    error: dict[str, object] = {
+        "code": exc.code,
+        "message": exc.message,
+        "retryable": False,
+    }
+    error.update(exc.details)
+    print(
+        json.dumps(
+            {"agent_api_version": 1, "error": error},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        file=sys.stderr,
+    )
 
 
 def _run_compare(args: argparse.Namespace) -> int:
