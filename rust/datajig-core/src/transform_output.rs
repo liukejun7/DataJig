@@ -2,7 +2,7 @@ use crate::io::publish_new_noreplace;
 use crate::jsonl_inspect::jsonl_record_id_digest;
 use crate::prepare::MAX_OUTPUT_LINE_BYTES;
 use crate::strict_json::reject_duplicate_json_members;
-use crate::{TransformField, TransformLimits};
+use crate::{TransformField, TransformLimitDetails, TransformLimits};
 use anyhow::{Context, Result};
 use serde_json::{Map, Number, Value};
 use std::collections::HashSet;
@@ -28,6 +28,7 @@ pub enum TransformOutputErrorKind {
 pub struct TransformOutputError {
     kind: TransformOutputErrorKind,
     message: String,
+    limit_details: Option<TransformLimitDetails>,
 }
 
 impl TransformOutputError {
@@ -39,7 +40,17 @@ impl TransformOutputError {
         Self {
             kind,
             message: message.into(),
+            limit_details: None,
         }
+    }
+
+    fn with_limit_details(mut self, details: TransformLimitDetails) -> Self {
+        self.limit_details = Some(details);
+        self
+    }
+
+    pub fn limit_details(&self) -> Option<&TransformLimitDetails> {
+        self.limit_details.as_ref()
     }
 }
 
@@ -141,25 +152,33 @@ fn verify_transform_candidate_mode(
         ));
     }
     if candidate_metadata.len() > limits.output_bytes {
-        return Err(output_error(
-            TransformOutputErrorKind::OutputLimit,
+        return Err(output_limit_error(
             format!(
                 "transform candidate is {} bytes > limit {} bytes",
                 candidate_metadata.len(),
                 limits.output_bytes
             ),
+            "output_bytes",
+            candidate_metadata.len(),
+            false,
+            limits.output_bytes,
+            "bytes",
         ));
     }
     let source = open_regular_file_nofollow(candidate)
         .context("cannot open transform provider candidate without following symlinks")?;
     if source.metadata()?.len() > limits.output_bytes {
-        return Err(output_error(
-            TransformOutputErrorKind::OutputLimit,
+        let observed = source.metadata()?.len();
+        return Err(output_limit_error(
             format!(
                 "transform candidate is {} bytes > limit {} bytes",
-                source.metadata()?.len(),
-                limits.output_bytes
+                observed, limits.output_bytes
             ),
+            "output_bytes",
+            observed,
+            false,
+            limits.output_bytes,
+            "bytes",
         ));
     }
     let mut reader = BufReader::new(source);
@@ -191,17 +210,20 @@ fn verify_transform_candidate_mode(
         if line.len() > MAX_OUTPUT_LINE_BYTES + 1
             || (line.len() == MAX_OUTPUT_LINE_BYTES + 1 && line.last() != Some(&b'\n'))
         {
-            return Err(output_error(
-                TransformOutputErrorKind::OutputLimit,
+            return Err(output_limit_error(
                 "transform output row exceeds the line byte limit",
+                "output_row_bytes",
+                line.len() as u64,
+                true,
+                MAX_OUTPUT_LINE_BYTES as u64,
+                "bytes",
             ));
         }
         rows = rows
             .checked_add(1)
             .context("transform row count overflow")?;
         if rows > limits.output_rows {
-            return Err(output_error(
-                TransformOutputErrorKind::OutputLimit,
+            return Err(output_limit_error(
                 format!(
                     "transform output contains at least {rows} rows > limit {} {}",
                     limits.output_rows,
@@ -211,6 +233,11 @@ fn verify_transform_candidate_mode(
                         "rows"
                     }
                 ),
+                "output_rows",
+                rows,
+                true,
+                limits.output_rows,
+                "rows",
             ));
         }
         if line.last() == Some(&b'\n') {
@@ -273,12 +300,16 @@ fn verify_transform_candidate_mode(
             .checked_add(encoded.len() as u64 + 1)
             .context("transform output size overflow")?;
         if next_bytes > limits.output_bytes {
-            return Err(output_error(
-                TransformOutputErrorKind::OutputLimit,
+            return Err(output_limit_error(
                 format!(
                     "canonical transform output is {next_bytes} bytes > limit {} bytes",
                     limits.output_bytes
                 ),
+                "output_bytes",
+                next_bytes,
+                false,
+                limits.output_bytes,
+                "bytes",
             ));
         }
         writer.write_all(&encoded)?;
@@ -344,18 +375,24 @@ fn validate_schema(
     id_field: &str,
     limits: &TransformLimits,
 ) -> Result<Vec<SchemaField>> {
-    if observed.is_empty() || observed.len() > limits.output_fields {
+    if observed.is_empty() {
         return Err(output_error(
             TransformOutputErrorKind::Schema,
-            if observed.is_empty() {
-                "transform output schema is empty".to_owned()
-            } else {
-                format!(
-                    "transform output schema has {} fields > limit {} fields",
-                    observed.len(),
-                    limits.output_fields
-                )
-            },
+            "transform output schema is empty",
+        ));
+    }
+    if observed.len() > limits.output_fields {
+        return Err(output_limit_error(
+            format!(
+                "transform output schema has {} fields > limit {} fields",
+                observed.len(),
+                limits.output_fields
+            ),
+            "output_fields",
+            observed.len() as u64,
+            false,
+            limits.output_fields as u64,
+            "fields",
         ));
     }
     let mut names = HashSet::new();
@@ -488,6 +525,25 @@ fn create_private_file(path: &Path) -> Result<File> {
 
 fn output_error(kind: TransformOutputErrorKind, message: impl Into<String>) -> anyhow::Error {
     TransformOutputError::new(kind, message).into()
+}
+
+fn output_limit_error(
+    message: impl Into<String>,
+    metric: &'static str,
+    observed: u64,
+    observed_is_lower_bound: bool,
+    limit: u64,
+    unit: &'static str,
+) -> anyhow::Error {
+    TransformOutputError::new(TransformOutputErrorKind::OutputLimit, message)
+        .with_limit_details(TransformLimitDetails::new(
+            metric,
+            observed,
+            observed_is_lower_bound,
+            limit,
+            unit,
+        ))
+        .into()
 }
 
 #[derive(Clone, Copy)]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import tomllib
@@ -18,8 +19,8 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             (REPOSITORY_ROOT / "rust" / "datajig-core" / "Cargo.toml").read_text()
         )
 
-        self.assertEqual("0.8.1", metadata["project"]["version"])
-        self.assertEqual("0.8.1", rust_metadata["package"]["version"])
+        self.assertEqual("0.8.2", metadata["project"]["version"])
+        self.assertEqual("0.8.2", rust_metadata["package"]["version"])
         self.assertEqual("PYPI.md", metadata["project"]["readme"])
         self.assertEqual(
             [{"name": "Kejun Liu", "email": "liukj7@gmail.com"}],
@@ -100,6 +101,52 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("python -m pip install -e '.[dev,duckdb]'", workflow)
+
+    def test_ci_parallelizes_real_data_suites_and_python_compatibility(self) -> None:
+        workflow = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("test-suite:", workflow)
+        self.assertIn("Python compatibility", workflow)
+        self.assertIn("python tools/run_ci_suite.py", workflow)
+        self.assertIn("DATAJIG_NATIVE", workflow)
+        self.assertIn("fail-fast: false", workflow)
+
+        listed = subprocess.run(
+            ["python", "tools/run_ci_suite.py", "--list"],
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, listed.returncode, listed.stderr)
+        suites = json.loads(listed.stdout)
+        assigned = [module for modules in suites.values() for module in modules]
+        expected = sorted(
+            f"tests.{path.stem}"
+            for path in (REPOSITORY_ROOT / "tests").glob("test_*.py")
+        )
+        self.assertEqual(expected, sorted(assigned))
+        self.assertEqual(len(assigned), len(set(assigned)))
+
+    def test_wheel_smoke_runs_a_real_training_data_workflow(self) -> None:
+        workflow = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "wheels.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("datajig tutorial", workflow)
+        self.assertIn("export-info", workflow)
+
+    def test_publish_automatically_attaches_every_wheel_to_the_release(self) -> None:
+        workflow = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "publish.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("contents: write", workflow)
+        self.assertIn("gh release create", workflow)
+        self.assertIn("gh release upload", workflow)
+        self.assertIn("dist/*.whl", workflow)
 
 
 def forbidden_public_path(path: str) -> bool:

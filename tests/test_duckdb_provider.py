@@ -249,6 +249,66 @@ class DuckDbProviderTest(unittest.TestCase):
                 stream.seek(-30, 2)
                 self.assertIn(b'"id":129999', stream.read())
 
+    def test_stream_result_reports_machine_readable_row_limit_details(self) -> None:
+        cursor = _StreamingCursor(2)
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate.jsonl"
+            with self.assertRaises(provider.ProviderError) as raised:
+                provider._stream_result(
+                    cursor,
+                    candidate,
+                    65_536,
+                    max_rows=1,
+                )
+
+        self.assertEqual("OUTPUT_LIMIT_EXCEEDED", raised.exception.code)
+        self.assertEqual(
+            {
+                "metric": "output_rows",
+                "observed": 2,
+                "observed_is_lower_bound": True,
+                "limit": 1,
+                "unit": "rows",
+            },
+            raised.exception.details,
+        )
+
+    def test_stream_result_reports_machine_readable_field_limit_details(self) -> None:
+        cursor = _WideCursor(257)
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate.jsonl"
+            with self.assertRaises(provider.ProviderError) as raised:
+                provider._stream_result(cursor, candidate, 65_536, max_fields=256)
+
+        self.assertEqual("OUTPUT_LIMIT_EXCEEDED", raised.exception.code)
+        self.assertEqual(
+            {
+                "metric": "output_fields",
+                "observed": 257,
+                "observed_is_lower_bound": False,
+                "limit": 256,
+                "unit": "fields",
+            },
+            raised.exception.details,
+        )
+
+    def test_stream_result_reports_machine_readable_byte_limit_details(self) -> None:
+        cursor = _StreamingCursor(1)
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate.jsonl"
+            with self.assertRaises(provider.ProviderError) as raised:
+                provider._stream_result(cursor, candidate, 65_536, max_bytes=1)
+
+        self.assertEqual("OUTPUT_LIMIT_EXCEEDED", raised.exception.code)
+        details = raised.exception.details
+        self.assertIsNotNone(details)
+        assert details is not None
+        self.assertEqual("output_bytes", details["metric"])
+        self.assertGreater(details["observed"], 1)
+        self.assertTrue(details["observed_is_lower_bound"])
+        self.assertEqual(1, details["limit"])
+        self.assertEqual("bytes", details["unit"])
+
     def test_execute_binds_parameters_and_returns_only_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -350,3 +410,14 @@ class _StreamingCursor:
     def fetchall(self) -> list[object]:
         self.fetchall_called = True
         raise AssertionError("provider must never call fetchall")
+
+
+class _WideCursor:
+    def __init__(self, fields: int) -> None:
+        self.description = [
+            (f"field_{index}", "VARCHAR", None, None, None, None, True)
+            for index in range(fields)
+        ]
+
+    def fetchmany(self, _size: int) -> list[object]:
+        raise AssertionError("field limits must be enforced before rows are fetched")

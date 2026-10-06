@@ -114,6 +114,22 @@ consumption_plan:
             receipt["pipeline_receipt_id"], repeated["artifact"]["pipeline_receipt_id"]
         )
 
+    def test_pipeline_binds_nonempty_transform_parameters(self) -> None:
+        config, _ = self._project()
+        document = config.read_text(encoding="utf-8").replace(
+            "FROM events GROUP BY user_id ORDER BY id\n  id_field: id\n  params: []",
+            "FROM events WHERE CAST(amount AS INTEGER) >= ? GROUP BY user_id ORDER BY id\n"
+            "  id_field: id\n  params: [100]",
+        )
+        config.write_text(document, encoding="utf-8")
+
+        applied = self.run_cli("pipeline", "apply", "--config", config, "--auto-accept").payload[
+            "artifact"
+        ]
+
+        self.assertEqual("committed", applied["status"])
+        self.assertTrue((config.parent / "prepared" / "training.jsonl").is_file())
+
     def test_apply_rejects_acceptance_or_input_drift_before_publication(self) -> None:
         config, source = self._project()
         plan, planned = self._plan(config)

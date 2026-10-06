@@ -7,7 +7,7 @@ import unittest
 from importlib.metadata import version
 from pathlib import Path
 
-from cli_harness import REPOSITORY_ROOT
+from tests.cli_harness import REPOSITORY_ROOT
 
 
 class CliDiscoveryTests(unittest.TestCase):

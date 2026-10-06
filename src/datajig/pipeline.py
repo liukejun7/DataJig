@@ -1252,7 +1252,7 @@ def _execute_transform(
         with params_path.open("x", encoding="utf-8") as stream:
             json.dump(parameters, stream, ensure_ascii=False, separators=(",", ":"))
             stream.write("\n")
-        arguments.extend(("--params", str(params_path)))
+        arguments.extend(("--params-file", str(params_path)))
     arguments.extend(
         (
             "--id-field",

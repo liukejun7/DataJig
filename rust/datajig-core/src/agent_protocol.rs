@@ -1891,7 +1891,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         command(
             "transform-plan",
             "Preview a bounded DuckDB SELECT over explicit CSV, Parquet, or JSONL aliases and bind the exact output before authorization.",
-            "datajig transform-plan --input <ALIAS=PATH>... --sql <QUERY.sql> [--params <PARAMS.json>] --id-field <FIELD> --output <DATASET.jsonl> --plan <PLAN.json>",
+            "datajig transform-plan --input <ALIAS=PATH>... (--sql <SELECT> | --sql-file <QUERY.sql>) [--params <JSON_ARRAY> | --params-file <PARAMS.json>] --id-field <FIELD> --output <DATASET.jsonl> --plan <PLAN.json>",
             writes(
                 vec![
                     "read_dataset",
@@ -1920,11 +1920,19 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
                 ),
                 input(
                     "params",
+                    "json_array",
+                    false,
+                    false,
+                    None,
+                    "Optional inline JSON array of at most 256 scalar positional parameters.",
+                ),
+                input(
+                    "params_file",
                     "path",
                     false,
                     false,
                     None,
-                    "Optional JSON array of at most 256 scalar positional parameters.",
+                    "Optional UTF-8 file containing the JSON parameter array; mutually exclusive with params.",
                 ),
                 input(
                     "id_field",

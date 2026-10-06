@@ -3,8 +3,8 @@ use crate::tabular_source::{
     TabularConsumer, TabularRow, stream_csv, stream_jsonl, stream_parquet,
 };
 use crate::{
-    InvalidArgumentError, TransformField, TransformLimits, TransformProviderIdentity,
-    TransformSource, TransformSourceFormat,
+    InvalidArgumentError, TransformField, TransformLimitDetails, TransformLimits,
+    TransformProviderIdentity, TransformSource, TransformSourceFormat,
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ pub struct TransformProviderExecutionError {
     code: String,
     message: String,
     remediation: String,
+    limit_details: Option<TransformLimitDetails>,
 }
 
 impl TransformProviderExecutionError {
@@ -51,6 +52,10 @@ impl TransformProviderExecutionError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    pub fn limit_details(&self) -> Option<&TransformLimitDetails> {
+        self.limit_details.as_ref()
+    }
 }
 
 impl fmt::Display for TransformProviderExecutionError {
@@ -64,6 +69,19 @@ impl Error for TransformProviderExecutionError {}
 #[derive(Debug)]
 pub struct TransformProviderTimeoutError {
     limit: Duration,
+}
+
+impl TransformProviderTimeoutError {
+    pub fn limit_details(&self) -> TransformLimitDetails {
+        let milliseconds = self.limit.as_millis().try_into().unwrap_or(u64::MAX);
+        TransformLimitDetails::new(
+            "wall_time",
+            milliseconds,
+            true,
+            milliseconds,
+            "milliseconds",
+        )
+    }
 }
 
 impl fmt::Display for TransformProviderTimeoutError {
@@ -181,6 +199,13 @@ pub fn stage_transform_sources(
                     "transform sources exceed {} bytes",
                     limits.source_bytes
                 ))
+                .with_limit_details(
+                    "source_bytes",
+                    next_bytes,
+                    false,
+                    limits.source_bytes,
+                    "bytes",
+                )
                 .into());
             }
             let rows = count_rows(&destination, input.format, limits.source_rows - total_rows)?;
@@ -192,6 +217,7 @@ pub fn stage_transform_sources(
                     "transform sources exceed {} rows",
                     limits.source_rows
                 ))
+                .with_limit_details("source_rows", next_rows, false, limits.source_rows, "rows")
                 .into());
             }
             let descriptor = TransformSource::create(
@@ -387,6 +413,18 @@ struct ProviderErrorDetails {
     code: String,
     message: String,
     remediation: String,
+    #[serde(default)]
+    details: Option<ProviderLimitDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderLimitDetails {
+    metric: String,
+    observed: u64,
+    observed_is_lower_bound: bool,
+    limit: u64,
+    unit: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -656,6 +694,13 @@ fn stage_regular_file(
                     "transform sources contain at least {} bytes > limit {total_limit} bytes",
                     bytes_before.saturating_add(maximum_bytes).saturating_add(1)
                 ))
+                .with_limit_details(
+                    "source_bytes",
+                    bytes_before.saturating_add(maximum_bytes).saturating_add(1),
+                    true,
+                    total_limit,
+                    "bytes",
+                )
                 .into());
             }
         }
@@ -753,6 +798,7 @@ impl TabularConsumer for RowCounter {
                 self.maximum,
                 if self.maximum == 1 { "row" } else { "rows" }
             ))
+            .with_limit_details("source_rows", self.rows, true, self.maximum, "rows")
             .into());
         }
         Ok(())
@@ -827,6 +873,10 @@ fn provider_failure(
                 code: response.error.code,
                 message: response.error.message,
                 remediation: response.error.remediation,
+                limit_details: response
+                    .error
+                    .details
+                    .and_then(validated_provider_limit_details),
             }
             .into();
         }
@@ -835,6 +885,27 @@ fn provider_failure(
         "{label} exited unsuccessfully (diagnostic bytes: {diagnostic_bytes})"
     ))
     .into()
+}
+
+fn validated_provider_limit_details(
+    details: ProviderLimitDetails,
+) -> Option<TransformLimitDetails> {
+    let (metric, unit) = match (details.metric.as_str(), details.unit.as_str()) {
+        ("output_rows", "rows") => ("output_rows", "rows"),
+        ("output_bytes", "bytes") => ("output_bytes", "bytes"),
+        ("output_fields", "fields") => ("output_fields", "fields"),
+        _ => return None,
+    };
+    if details.observed <= details.limit {
+        return None;
+    }
+    Some(TransformLimitDetails::new(
+        metric,
+        details.observed,
+        details.observed_is_lower_bound,
+        details.limit,
+        unit,
+    ))
 }
 
 fn directory_entries(path: &Path) -> Result<BTreeSet<std::ffi::OsString>> {

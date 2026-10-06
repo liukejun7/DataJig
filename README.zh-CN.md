@@ -24,7 +24,7 @@ raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → �
 如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
 会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.8.1` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.8.2` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## DataJig 在技术栈中的位置
 
@@ -261,13 +261,15 @@ WHERE score >= ?
 ORDER BY paper_id
 ```
 
-把参数保存为 `params.json`（例如 `[0.8]`），先针对 CSV 或 Parquet 生成计划：
+把参数保存为 `params.json`（例如 `[0.8]`），先针对 CSV 或 Parquet 生成计划。
+一次性调用也可以直接写 `--params '[0.8]'`；只有参数已保存在文件里时才使用
+`--params-file`，两者不能同时指定：
 
 ```bash
 datajig transform-plan \
   --input papers=data/papers.csv \
   --sql-file transforms/high-score.sql \
-  --params transforms/params.json \
+  --params-file transforms/params.json \
   --id-field paper_id \
   --output data/high-score.jsonl \
   --plan artifacts/high-score.transform.json

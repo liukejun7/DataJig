@@ -363,6 +363,15 @@ fn output_verifier_enforces_id_integrity_and_stream_limits() {
             .contains("at least 2 rows > limit 1 row"),
         "{row_error}"
     );
+    let row_details = row_error
+        .downcast_ref::<TransformOutputError>()
+        .and_then(TransformOutputError::limit_details)
+        .expect("row limit details should be machine readable");
+    assert_eq!("output_rows", row_details.metric());
+    assert_eq!(2, row_details.observed());
+    assert!(row_details.observed_is_lower_bound());
+    assert_eq!(1, row_details.limit());
+    assert_eq!("rows", row_details.unit());
     let _ = fs::remove_file(row_candidate);
 
     let mut byte_limits = TransformLimits::v1();
@@ -413,9 +422,18 @@ fn output_verifier_accepts_256_fields_and_rejects_the_next() {
     )
     .unwrap_err();
     assert_eq!(
-        TransformOutputErrorKind::Schema,
+        TransformOutputErrorKind::OutputLimit,
         error.downcast_ref::<TransformOutputError>().unwrap().kind()
     );
+    let details = error
+        .downcast_ref::<TransformOutputError>()
+        .and_then(TransformOutputError::limit_details)
+        .expect("field limit details should be machine readable");
+    assert_eq!("output_fields", details.metric());
+    assert_eq!(257, details.observed());
+    assert!(!details.observed_is_lower_bound());
+    assert_eq!(256, details.limit());
+    assert_eq!("fields", details.unit());
     assert!(
         error.to_string().contains("257 fields > limit 256 fields"),
         "{error}"

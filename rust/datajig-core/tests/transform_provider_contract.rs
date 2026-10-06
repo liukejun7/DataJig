@@ -289,6 +289,15 @@ fn provider_process_rejects_malformed_mismatched_oversized_and_timeout() {
             .is_some()
     );
     assert!(error.to_string().contains("limit 0.05 seconds"), "{error}");
+    let timeout = error
+        .downcast_ref::<TransformProviderTimeoutError>()
+        .expect("timeout error type should be preserved");
+    let details = timeout.limit_details();
+    assert_eq!("wall_time", details.metric());
+    assert_eq!(50, details.observed());
+    assert!(details.observed_is_lower_bound());
+    assert_eq!(50, details.limit());
+    assert_eq!("milliseconds", details.unit());
     assert!(started.elapsed() < Duration::from_secs(1));
     let _ = fs::remove_dir_all(fixture.root);
 }
@@ -302,9 +311,16 @@ fn provider_process_preserves_a_valid_structured_failure() {
         "correlation_id": "corr-error",
         "status": "error",
         "error": {
-            "code": "SOURCE_DRIFT",
-            "message": "The staged source changed.",
-            "remediation": "Create a new plan."
+            "code": "OUTPUT_LIMIT_EXCEEDED",
+            "message": "The provider produced too many rows.",
+            "remediation": "Reduce the output.",
+            "details": {
+                "metric": "output_rows",
+                "observed": 101,
+                "observed_is_lower_bound": true,
+                "limit": 100,
+                "unit": "rows"
+            }
         }
     });
     let script = write_provider_script(
@@ -324,8 +340,16 @@ fn provider_process_preserves_a_valid_structured_failure() {
     let provider_error = error
         .downcast_ref::<TransformProviderExecutionError>()
         .expect("structured provider error should be preserved");
-    assert_eq!("SOURCE_DRIFT", provider_error.code());
-    assert_eq!("Create a new plan.", provider_error.remediation());
+    assert_eq!("OUTPUT_LIMIT_EXCEEDED", provider_error.code());
+    assert_eq!("Reduce the output.", provider_error.remediation());
+    let details = provider_error
+        .limit_details()
+        .expect("valid provider limit details should survive the protocol boundary");
+    assert_eq!("output_rows", details.metric());
+    assert_eq!(101, details.observed());
+    assert!(details.observed_is_lower_bound());
+    assert_eq!(100, details.limit());
+    assert_eq!("rows", details.unit());
     let _ = fs::remove_dir_all(fixture.root);
 }
 
