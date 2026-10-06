@@ -87,6 +87,12 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         for action in legacy:
             self.assertNotIn(action, workflows)
 
+    def test_cli_integration_installs_the_optional_duckdb_provider(self) -> None:
+        workflow = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("python -m pip install -e '.[dev,duckdb]'", workflow)
+
 
 def forbidden_public_path(path: str) -> bool:
     lowered = path.lower()
