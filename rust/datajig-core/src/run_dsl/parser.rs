@@ -1,10 +1,12 @@
 use super::RunDslError;
 use super::ast::{
-    CompiledRunTask, RUN_DSL_SCHEMA_VERSION, RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst,
+    CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst, FilterPredicateAst, MissingModeAst,
+    PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst,
     RunTransformAst, SourceFormat, SourceIdAst, SourceIdMode, TrainingSplitsAst,
     canonicalize_run_task,
 };
 use super::lexer::{Token, TokenKind, lex};
+use serde_json::{Number, Value};
 use std::path::{Component, Path};
 
 const RESERVED_SOURCE_ID: &str = "_datajig_source_id";
@@ -71,6 +73,12 @@ impl Parser {
             }
         };
 
+        let prepare_steps = if self.consume_keyword("prepare") {
+            self.parse_prepare_steps()?
+        } else {
+            Vec::new()
+        };
+
         if !self.consume_keyword("export") {
             return Err(self.error(
                 "INVALID_DSL",
@@ -125,7 +133,7 @@ impl Parser {
             },
             prepare: RunPrepareAst {
                 generated_source_id,
-                steps: Vec::new(),
+                steps: prepare_steps,
             },
             transform: RunTransformAst::Sql {
                 sql: format!(
@@ -137,6 +145,259 @@ impl Parser {
             export: RunExportAst { splits, id_field },
         };
         canonicalize_run_task(ast)
+    }
+
+    fn parse_prepare_steps(&mut self) -> Result<Vec<PrepareStepAst>, RunDslError> {
+        let mut steps = Vec::new();
+        loop {
+            let step_index = steps.len();
+            steps.push(self.parse_prepare_step(step_index)?);
+            if !matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                break;
+            }
+            if !self
+                .tokens
+                .get(self.cursor + 1)
+                .is_some_and(is_prepare_step_start)
+            {
+                return Err(self.error(
+                    "INVALID_DSL",
+                    &format!("prepare[{step_index}]"),
+                    "a prepare step has a trailing or malformed field separator",
+                    "separate fields with commas and start the next step with a supported op",
+                ));
+            }
+            self.cursor += 1;
+        }
+        Ok(steps)
+    }
+
+    fn parse_prepare_step(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let Some(token) = self.tokens.get(self.cursor) else {
+            return Err(self.error(
+                "INVALID_DSL",
+                &format!("prepare[{index}]"),
+                "a prepare operation is missing",
+                "add one of select/filter/rename/cast/trim/case/replace/fill/drop-missing/dedupe",
+            ));
+        };
+        let position = token.start;
+        let operation = token.value().unwrap_or_default().to_ascii_lowercase();
+        self.cursor += 1;
+        match operation.as_str() {
+            "select" => Ok(PrepareStepAst::Select {
+                fields: self.parse_field_list(&format!("prepare[{index}].fields"))?,
+            }),
+            "filter" => self.parse_filter(index),
+            "rename" => self.parse_rename(index),
+            "cast" => self.parse_cast(index),
+            "trim" => Ok(PrepareStepAst::Trim {
+                fields: self.parse_field_list(&format!("prepare[{index}].fields"))?,
+            }),
+            "case" => self.parse_case(index),
+            "replace" => self.parse_replace(index),
+            "fill" => self.parse_fill(index),
+            "drop-missing" => {
+                let mode = if self.consume_keyword("all") {
+                    MissingModeAst::All
+                } else {
+                    MissingModeAst::Any
+                };
+                Ok(PrepareStepAst::DropMissing {
+                    fields: self.parse_field_list(&format!("prepare[{index}].fields"))?,
+                    mode,
+                })
+            }
+            "dedupe" => self.parse_dedupe(index),
+            _ => Err(RunDslError::new(
+                "INVALID_DSL",
+                format!("prepare[{index}]"),
+                position,
+                format!("unsupported prepare operation `{operation}`"),
+                "use one of select/filter/rename/cast/trim/case/replace/fill/drop-missing/dedupe",
+            )),
+        }
+    }
+
+    fn parse_filter(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let (field, _) = self.take_value(
+            &format!("prepare[{index}].field"),
+            "use `filter <field> <eq|ne|lt|lte|gt|gte> <scalar>`",
+        )?;
+        let location = format!("prepare[{index}].predicate");
+        let (predicate, position) = self.take_value(&location, "use one of eq/ne/lt/lte/gt/gte")?;
+        Ok(PrepareStepAst::Filter {
+            field,
+            predicate: parse_filter_predicate(&predicate, &location, position)?,
+            value: self.take_scalar(&format!("prepare[{index}].value"))?,
+        })
+    }
+
+    fn parse_rename(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let (from, _) = self.take_value(
+            &format!("prepare[{index}].from"),
+            "use `rename <field> to <field>`",
+        )?;
+        self.expect_keyword(
+            "to",
+            &format!("prepare[{index}].to"),
+            "use `rename <field> to <field>`",
+        )?;
+        let (to, _) = self.take_value(
+            &format!("prepare[{index}].to"),
+            "provide the new field name after `to`",
+        )?;
+        Ok(PrepareStepAst::Rename { from, to })
+    }
+
+    fn parse_cast(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let (field, _) = self.take_value(
+            &format!("prepare[{index}].field"),
+            "use `cast <field> as <type>`",
+        )?;
+        self.expect_keyword(
+            "as",
+            &format!("prepare[{index}].type"),
+            "use `cast <field> as <type>`",
+        )?;
+        let location = format!("prepare[{index}].type");
+        let (value_type, position) =
+            self.take_value(&location, "use one of string/integer/number/boolean")?;
+        Ok(PrepareStepAst::Cast {
+            field,
+            value_type: parse_cast_type(&value_type, &location, position)?,
+        })
+    }
+
+    fn parse_case(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let fields =
+            self.parse_field_list_until(&format!("prepare[{index}].fields"), &["lower", "upper"])?;
+        let location = format!("prepare[{index}].mode");
+        let (mode, position) = self.take_value(&location, "use upper/lower")?;
+        Ok(PrepareStepAst::Case {
+            fields,
+            mode: parse_case_mode(&mode, &location, position)?,
+        })
+    }
+
+    fn parse_replace(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let (field, _) = self.take_value(
+            &format!("prepare[{index}].field"),
+            "use `replace <field> <from> to <to>`",
+        )?;
+        let from = self.take_scalar(&format!("prepare[{index}].from"))?;
+        self.expect_keyword(
+            "to",
+            &format!("prepare[{index}].to"),
+            "use `replace <field> <from> to <to>`",
+        )?;
+        let to = self.take_scalar(&format!("prepare[{index}].to"))?;
+        Ok(PrepareStepAst::Replace { field, from, to })
+    }
+
+    fn parse_fill(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        let (field, _) = self.take_value(
+            &format!("prepare[{index}].field"),
+            "use `fill <field> with <scalar>`",
+        )?;
+        self.expect_keyword(
+            "with",
+            &format!("prepare[{index}].value"),
+            "use `fill <field> with <scalar>`",
+        )?;
+        let value = self.take_scalar(&format!("prepare[{index}].value"))?;
+        Ok(PrepareStepAst::FillMissing { field, value })
+    }
+
+    fn parse_dedupe(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+        self.expect_keyword(
+            "by",
+            &format!("prepare[{index}].by"),
+            "use `dedupe by <fields> [keep first|error]`",
+        )?;
+        let by = self.parse_field_list_until(&format!("prepare[{index}].by"), &["keep"])?;
+        let keep = if self.consume_keyword("keep") {
+            let location = format!("prepare[{index}].keep");
+            let (keep, position) = self.take_value(&location, "use first/error after `keep`")?;
+            parse_dedupe_keep(&keep, &location, position)?
+        } else {
+            DedupeKeepAst::First
+        };
+        Ok(PrepareStepAst::Dedupe { by, keep })
+    }
+
+    fn parse_field_list(&mut self, location: &str) -> Result<Vec<String>, RunDslError> {
+        self.parse_field_list_until(location, &[])
+    }
+
+    fn parse_field_list_until(
+        &mut self,
+        location: &str,
+        stop_words: &[&str],
+    ) -> Result<Vec<String>, RunDslError> {
+        let (first, _) = self.take_value(location, "provide at least one field name")?;
+        let mut fields = vec![first];
+        loop {
+            if self
+                .tokens
+                .get(self.cursor)
+                .is_some_and(|token| stop_words.iter().any(|word| token.is_word(word)))
+            {
+                break;
+            }
+            if !matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                break;
+            }
+            if self
+                .tokens
+                .get(self.cursor + 1)
+                .is_some_and(is_prepare_step_start)
+            {
+                break;
+            }
+            self.cursor += 1;
+            let (field, _) = self.take_value(location, "provide a field name after the comma")?;
+            fields.push(field);
+        }
+        Ok(fields)
+    }
+
+    fn take_scalar(&mut self, location: &str) -> Result<Value, RunDslError> {
+        let Some(token) = self.tokens.get(self.cursor).cloned() else {
+            return Err(self.error(
+                "INVALID_DSL",
+                location,
+                "a scalar value is missing",
+                "use a quoted string, number, boolean, or null",
+            ));
+        };
+        self.cursor += 1;
+        match token.kind {
+            TokenKind::Quoted(value) => Ok(Value::String(value)),
+            TokenKind::Word(value) if value.eq_ignore_ascii_case("null") => Ok(Value::Null),
+            TokenKind::Word(value) if value.eq_ignore_ascii_case("true") => Ok(Value::Bool(true)),
+            TokenKind::Word(value) if value.eq_ignore_ascii_case("false") => Ok(Value::Bool(false)),
+            TokenKind::Word(value) => parse_number(&value).map(Value::Number).ok_or_else(|| {
+                RunDslError::new(
+                    "INVALID_DSL",
+                    location,
+                    token.start,
+                    format!("unquoted scalar `{value}` is not a number, boolean, or null"),
+                    format!("quote a string as `'{value}'`"),
+                )
+            }),
+            _ => Err(RunDslError::new(
+                "INVALID_DSL",
+                location,
+                token.start,
+                "the scalar has invalid punctuation",
+                "use a quoted string, number, boolean, or null",
+            )),
+        }
+    }
+
+    fn peek_kind(&self) -> Option<&TokenKind> {
+        self.tokens.get(self.cursor).map(|token| &token.kind)
     }
 
     fn take_percentage(&mut self, location: &str) -> Result<u16, RunDslError> {
@@ -221,6 +482,113 @@ impl Parser {
             .get(self.cursor)
             .map_or(self.end_position, |token| token.start)
     }
+}
+
+fn is_prepare_step_start(token: &Token) -> bool {
+    [
+        "select",
+        "filter",
+        "rename",
+        "cast",
+        "trim",
+        "case",
+        "replace",
+        "fill",
+        "drop-missing",
+        "dedupe",
+    ]
+    .iter()
+    .any(|operation| token.is_word(operation))
+}
+
+fn parse_filter_predicate(
+    value: &str,
+    location: &str,
+    position: usize,
+) -> Result<FilterPredicateAst, RunDslError> {
+    match value.to_ascii_lowercase().as_str() {
+        "eq" => Ok(FilterPredicateAst::Eq),
+        "ne" => Ok(FilterPredicateAst::Ne),
+        "lt" => Ok(FilterPredicateAst::Lt),
+        "lte" => Ok(FilterPredicateAst::Lte),
+        "gt" => Ok(FilterPredicateAst::Gt),
+        "gte" => Ok(FilterPredicateAst::Gte),
+        _ => Err(RunDslError::new(
+            "INVALID_DSL",
+            location,
+            position,
+            format!("unsupported filter predicate `{value}`"),
+            "use one of eq/ne/lt/lte/gt/gte",
+        )),
+    }
+}
+
+fn parse_cast_type(
+    value: &str,
+    location: &str,
+    position: usize,
+) -> Result<CastTypeAst, RunDslError> {
+    match value.to_ascii_lowercase().as_str() {
+        "string" => Ok(CastTypeAst::String),
+        "integer" => Ok(CastTypeAst::Integer),
+        "number" => Ok(CastTypeAst::Number),
+        "boolean" => Ok(CastTypeAst::Boolean),
+        _ => Err(RunDslError::new(
+            "INVALID_DSL",
+            location,
+            position,
+            format!("unsupported cast type `{value}`"),
+            "use one of string/integer/number/boolean",
+        )),
+    }
+}
+
+fn parse_case_mode(
+    value: &str,
+    location: &str,
+    position: usize,
+) -> Result<CaseModeAst, RunDslError> {
+    match value.to_ascii_lowercase().as_str() {
+        "lower" => Ok(CaseModeAst::Lower),
+        "upper" => Ok(CaseModeAst::Upper),
+        _ => Err(RunDslError::new(
+            "INVALID_DSL",
+            location,
+            position,
+            format!("unsupported case mode `{value}`"),
+            "use upper/lower",
+        )),
+    }
+}
+
+fn parse_dedupe_keep(
+    value: &str,
+    location: &str,
+    position: usize,
+) -> Result<DedupeKeepAst, RunDslError> {
+    match value.to_ascii_lowercase().as_str() {
+        "first" => Ok(DedupeKeepAst::First),
+        "error" => Ok(DedupeKeepAst::Error),
+        _ => Err(RunDslError::new(
+            "INVALID_DSL",
+            location,
+            position,
+            format!("unsupported dedupe keep mode `{value}`"),
+            "use first/error",
+        )),
+    }
+}
+
+fn parse_number(value: &str) -> Option<Number> {
+    if !value.contains(['.', 'e', 'E']) {
+        if let Ok(number) = value.parse::<i64>() {
+            return Some(Number::from(number));
+        }
+        if let Ok(number) = value.parse::<u64>() {
+            return Some(Number::from(number));
+        }
+    }
+    Number::from_f64(value.parse::<f64>().ok()?)
 }
 
 fn reject_known_unsupported(tokens: &[Token]) -> Result<(), RunDslError> {
