@@ -81,7 +81,7 @@ enum Command {
     },
     /// Return a machine-readable input artifact contract.
     #[command(
-        after_help = "Available artifacts:\n  jsonl-field-patch\n  jsonl-quality-policy\n  pipeline-config\n  prepare-recipe\n  repository-integration\n  subset-view\n  training-consumption-plan\n  training-consumption-receipt\n  transform-plan\n  transform-receipt"
+        after_help = "Available artifacts:\n  jsonl-field-patch\n  jsonl-quality-policy\n  pipeline-config\n  prepare-recipe\n  repository-integration\n  run-receipt\n  subset-view\n  training-consumption-plan\n  training-consumption-receipt\n  transform-plan\n  transform-receipt"
     )]
     ArtifactSchema {
         /// Optional artifact name; omit to list supported schemas.

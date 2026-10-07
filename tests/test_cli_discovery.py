@@ -165,6 +165,27 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertEqual("none", payload["delivery_update"]["fallback"])
         self.assertTrue(payload["features"]["fixed_delivery_updates"])
 
+    def test_run_receipt_contract_is_discoverable(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        environment["DATAJIG_NATIVE"] = str(self.native)
+        completed = subprocess.run(
+            ("python", "-m", "datajig.cli", "artifact-schema", "run-receipt"),
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        artifact = json.loads(completed.stdout)["artifact"]
+        self.assertEqual("run-receipt", artifact["name"])
+        self.assertEqual("run_receipt", artifact["example"]["kind"])
+        self.assertEqual(1, artifact["example"]["run_receipt_schema_version"])
+        self.assertIn("run_receipt_id", artifact["schema"]["required"])
+
     def test_top_level_version_matches_installed_package_metadata(self) -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")

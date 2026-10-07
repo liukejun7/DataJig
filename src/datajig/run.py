@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 
 import blake3
@@ -56,6 +58,16 @@ def execute_accepted_run(
         if not allow_recovery or exc.code != "PIPELINE_RECOVERY_REQUIRED":
             raise
         receipt, decision = apply_pipeline(pipeline_plan_path, pipeline_id, resume=True)
+    run_receipt = _build_run_receipt(artifact, binding, receipt)
+    run_receipt_path = (
+        root
+        / ".datajig"
+        / "runs"
+        / intent_id
+        / "receipts"
+        / f"{attempt_id}.json"
+    )
+    _persist_run_receipt(run_receipt_path, run_receipt)
     return {
         "agent_api_version": 1,
         "backend": "python-pipeline",
@@ -68,8 +80,101 @@ def execute_accepted_run(
             "plan_id": plan_id,
             "attempt_id": attempt_id,
             "execution_status": "committed",
+            "run_receipt_id": run_receipt["run_receipt_id"],
+            "run_receipt_path": str(run_receipt_path),
         },
     }
+
+
+def _build_run_receipt(
+    run_plan: Mapping[str, object],
+    binding: Mapping[str, object],
+    pipeline_receipt: Mapping[str, object],
+) -> dict[str, object]:
+    raw_consumption = pipeline_receipt.get("consumption_plans")
+    consumption_plan_ids = (
+        [
+            item["plan_id"]
+            for item in raw_consumption
+            if isinstance(item, dict) and isinstance(item.get("plan_id"), str)
+        ]
+        if isinstance(raw_consumption, list)
+        else []
+    )
+    basis: dict[str, object] = {
+        "namespace": "datajig",
+        "kind": "run_receipt",
+        "run_receipt_schema_version": 1,
+        "status": "committed",
+        "intent_id": _text(run_plan, "intent_id"),
+        "plan_id": _text(run_plan, "plan_id"),
+        "attempt_id": _text(run_plan, "attempt_id"),
+        "source_content_id": _text(binding, "source_content_id"),
+        "pipeline_id": _text(pipeline_receipt, "pipeline_id"),
+        "pipeline_receipt_id": _text(pipeline_receipt, "pipeline_receipt_id"),
+        "revision_id": _text(pipeline_receipt, "final_revision"),
+        "bundle_id": _text(pipeline_receipt, "bundle_id"),
+        "consumption_plan_ids": consumption_plan_ids,
+        "output": _text(binding, "output"),
+    }
+    encoded = json.dumps(
+        basis, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    receipt_id = "runrcpt_" + blake3.blake3(b"datajig-run-receipt-v1\0" + encoded).hexdigest()
+    return {**basis, "run_receipt_id": receipt_id}
+
+
+def _persist_run_receipt(path: Path, receipt: Mapping[str, object]) -> None:
+    payload = (
+        json.dumps(
+            receipt,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = None
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                existing_descriptor = os.open(path, flags)
+                try:
+                    metadata = os.fstat(existing_descriptor)
+                    existing = os.read(existing_descriptor, len(payload) + 1)
+                finally:
+                    os.close(existing_descriptor)
+            except OSError as exc:
+                raise PipelineError(
+                    "RUN_RECEIPT_CONFLICT",
+                    "Persisted run receipt cannot be safely verified",
+                ) from exc
+            if not stat.S_ISREG(metadata.st_mode) or existing != payload:
+                raise PipelineError(
+                    "RUN_RECEIPT_CONFLICT",
+                    "Persisted run receipt conflicts with the completed execution",
+                ) from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        with suppress(FileNotFoundError):
+            temporary.unlink()
 
 
 def _prepare_run_source(root: Path, attempt: Path, ast: Mapping[str, object]) -> Path:
