@@ -86,7 +86,10 @@ def _object(value: object, keys: frozenset[str], context: str) -> dict[str, obje
         _fail(f"{context} must be a mapping")
     unknown = sorted(set(value) - keys)
     if unknown:
-        _fail(f"{context} contains unknown field(s): {', '.join(unknown)}")
+        _fail(
+            f"{context} contains unknown field(s): {', '.join(unknown)}; "
+            f"allowed fields: {', '.join(sorted(keys))}"
+        )
     return value
 
 

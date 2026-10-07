@@ -2484,6 +2484,7 @@ fn transform_command_error(error: anyhow::Error) -> CommandError {
             "SOURCE_DRIFT" => "TRANSFORM_DRIFT",
             "OUTPUT_LIMIT_EXCEEDED" => "OUTPUT_LIMIT_EXCEEDED",
             "SOURCE_LOAD_FAILED" => "SOURCE_LOAD_FAILED",
+            "QUERY_EXECUTION_FAILED" => "TRANSFORM_QUERY_FAILED",
             "OUTPUT_SCHEMA_INVALID" => "OUTPUT_SCHEMA_INVALID",
             "INVALID_REQUEST" | "PROTOCOL_MISMATCH" => "INVALID_ARGUMENT",
             _ => "PROVIDER_EXECUTION_FAILED",

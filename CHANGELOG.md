@@ -3,6 +3,34 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.3] - 2026-10-07
+
+### Added
+
+- `artifact-schema pipeline-config` with a strict complete schema and an
+  executable canonical example; `pipeline plan --help` now includes the minimal
+  legal shape and relative-path rules.
+- A CI journey that generates three days of raw logs and executes directory
+  preparation, feature aggregation, lineage-bound versioning, review/seal,
+  training export, PyTorch consumption planning, pipeline delivery, and lineage
+  verification.
+
+### Changed
+
+- Unknown pipeline fields report every allowed field and return direct
+  `artifact-schema pipeline-config` and `pipeline plan --help` actions.
+- README and package documentation state the current pipeline-only lineage
+  lookup boundary and the deterministic-transform approach for source data
+  without a stable key.
+
+### Fixed
+
+- DuckDB conversion and query failures now preserve a bounded actionable
+  diagnostic, including the offending value, column, and target type when
+  available, instead of appearing as an unexplained provider crash. SQL text
+  and unbounded engine output remain suppressed, and failed transforms publish
+  no plan or dataset.
+
 ## [0.8.2] - 2026-10-06
 
 ### Added

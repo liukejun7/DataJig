@@ -348,6 +348,46 @@ class DuckDbProviderTest(unittest.TestCase):
                 candidate.read_text(encoding="utf-8"),
             )
 
+    def test_query_conversion_failure_preserves_bounded_duckdb_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "events.csv"
+            source.write_text("id,price\na,10\nid,price\nb,20\n", encoding="utf-8")
+            temp = root / "temp"
+            temp.mkdir()
+            candidate = root / "candidate.jsonl"
+            identity = provider._probe()
+
+            response = provider._handle_request(
+                {
+                    "protocol": "datajig.transform-provider.v1",
+                    "protocol_version": 1,
+                    "correlation_id": "corr-conversion",
+                    "operation": "execute",
+                    "expected_provider": identity,
+                    "sources": [_source("events", source, "csv", 3)],
+                    "sql": (
+                        "SELECT id, CAST(price AS BIGINT) AS price "
+                        "FROM events ORDER BY id"
+                    ),
+                    "parameters": [],
+                    "id_field": "id",
+                    "candidate_path": str(candidate),
+                    "temp_directory": str(temp),
+                    "limits": _limits(),
+                    "ast_policy_digest": "policy_test",
+                }
+            )
+
+            self.assertEqual("error", response["status"])
+            self.assertEqual("QUERY_EXECUTION_FAILED", response["error"]["code"])
+            self.assertIn("Conversion Error", response["error"]["message"])
+            self.assertIn("price", response["error"]["message"])
+            self.assertIn("INT64", response["error"]["message"])
+            self.assertNotIn("LINE 1", response["error"]["message"])
+            self.assertLessEqual(len(response["error"]["message"].encode("utf-8")), 1024)
+            self.assertFalse(candidate.exists())
+
     def test_missing_duckdb_is_a_structured_provider_error(self) -> None:
         with mock.patch.object(
             provider, "_import_duckdb", side_effect=ModuleNotFoundError("No module named duckdb")

@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 pub const ARTIFACT_SCHEMA_VERSION: u8 = 1;
 type ArtifactSchemaFactory = fn() -> Value;
 
-const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 8] = [
+const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 9] = [
     ("jsonl-field-patch", jsonl_field_patch_artifact),
+    ("pipeline-config", pipeline_config_artifact),
     ("prepare-recipe", prepare_recipe_artifact),
     ("repository-integration", repository_integration_artifact),
     ("subset-view", subset_view_artifact),
@@ -393,6 +394,125 @@ fn jsonl_field_patch_artifact() -> Value {
             "after": {"present": true, "value": 0.9}
         }
     })
+}
+
+fn pipeline_config_artifact() -> Value {
+    json!({
+        "name": "pipeline-config",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "media_type": "application/json",
+        "schema": pipeline_config_schema(),
+        "example": {
+            "schema_version": 1,
+            "pipeline": {"name": "user-agg-train", "provider": "duckdb"},
+            "target": {
+                "dataset": "prepared/training.jsonl",
+                "state": "workspace/.datajig",
+                "mode": "create"
+            },
+            "delivery": {"output": "deliveries/user-agg-train"},
+            "inputs": [
+                {"alias": "events", "path": "data/events.csv", "format": "csv"}
+            ],
+            "transform": {
+                "sql": "SELECT user_id AS id, CAST(SUM(CAST(amount AS INTEGER)) AS VARCHAR) AS total FROM events GROUP BY user_id ORDER BY id",
+                "id_field": "id",
+                "params": []
+            },
+            "validate": {"quality_policy": {"inline": {}}},
+            "export": {"split": ["train=7", "val=2", "test=1"]},
+            "consumption_plan": [
+                {"consumer": "pytorch", "split": "train", "run_id": "run-001"}
+            ]
+        }
+    })
+}
+
+fn pipeline_config_schema() -> Value {
+    let logical_path = || {
+        json!({
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$)).+$",
+            "description": "Normalized relative path resolved from the pipeline config directory"
+        })
+    };
+    let pipeline = strict_object(
+        &["name", "provider"],
+        json!({
+            "name":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+            "provider":{"const":"duckdb"}
+        }),
+    );
+    let target = strict_object(
+        &["dataset", "state", "mode"],
+        json!({
+            "dataset":logical_path(), "state":logical_path(), "mode":{"enum":["create","update"]}
+        }),
+    );
+    let delivery = strict_object(&["output"], json!({"output":logical_path()}));
+    let input = strict_object(
+        &["alias", "path", "format"],
+        json!({
+            "alias":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"},
+            "path":logical_path(), "format":{"enum":["csv","parquet","jsonl"]}
+        }),
+    );
+    let transform = strict_object(
+        &["sql", "id_field"],
+        json!({
+            "sql":{"type":"string","minLength":1,"maxLength":65536},
+            "id_field":nonempty_string(),
+            "params":{"type":"array","maxItems":256,"items":{"type":["null","boolean","integer","string"]},"default":[]}
+        }),
+    );
+    let policy = json!({
+        "oneOf": [
+            strict_object(&["inline"], json!({"inline":{}})),
+            strict_object(&["file"], json!({"file":logical_path()}))
+        ]
+    });
+    let validate = strict_object(&[], json!({"quality_policy":policy}));
+    let export = strict_object(
+        &["split"],
+        json!({
+            "split":{"type":"array","minItems":1,"items":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}=[1-9][0-9]*$"}},
+            "max_shard_records":{"type":"integer","minimum":1,"default":10000},
+            "max_shard_bytes":{"type":"integer","minimum":1,"default":268435456},
+            "seed":{"type":"string","minLength":1,"default":"datajig-v1"}
+        }),
+    );
+    let consumption = strict_object(
+        &["consumer", "split", "run_id"],
+        json!({
+            "consumer":{"enum":["python","pytorch","huggingface"]},
+            "split":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"},
+            "run_id":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}
+        }),
+    );
+    strict_object(
+        &[
+            "schema_version",
+            "pipeline",
+            "target",
+            "delivery",
+            "inputs",
+            "transform",
+            "export",
+            "consumption_plan",
+        ],
+        json!({
+            "schema_version":{"const":1},
+            "pipeline":pipeline,
+            "target":target,
+            "delivery":delivery,
+            "inputs":{"type":"array","minItems":1,"maxItems":16,"items":input},
+            "transform":transform,
+            "validate":validate,
+            "export":export,
+            "consumption_plan":{"type":"array","minItems":1,"items":consumption}
+        }),
+    )
 }
 
 fn prepare_recipe_artifact() -> Value {

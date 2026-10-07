@@ -8,9 +8,9 @@ It wraps data work in explicit plans, deterministic identities, semantic checks,
 immutable revisions, and evidence of which records crossed a verified training
 adapter boundary.
 
-Version 0.8.2 adds unambiguous inline and file-based transform parameters,
-machine-readable limit details, broader parallel CI coverage, real-data wheel
-smoke tests, and automatic GitHub Release assets.
+Version 0.8.3 preserves bounded DuckDB conversion diagnostics, publishes the
+complete pipeline configuration schema and example, and continuously exercises
+a three-day raw-log-to-training journey in parallel CI.
 
 ```text
 raw source -> pin -> prepare/transform -> review -> seal -> export -> train
@@ -74,6 +74,7 @@ For a complete local training-data delivery, install the DuckDB extra and use a
 single reviewed pipeline:
 
 ```bash
+datajig artifact-schema pipeline-config
 datajig pipeline plan --config pipeline.yaml --plan pipeline-plan.json
 datajig pipeline apply pipeline-plan.json --accept-plan pipe_...
 datajig pipeline info deliveries/my-training-data/pipeline-receipt.json --verify
@@ -85,6 +86,10 @@ IDs. Apply uses OS locks, a durable recovery journal, detached revision sealing,
 HEAD compare-and-swap, and a delivery commit marker. Interrupted work requires
 explicit `--resume`; an identical update still delivers a bundle and consumer
 plans without inventing a new revision.
+
+`lineage` resolves committed pipeline receipts and related pipeline artifacts.
+For an atomic manual workflow, inspect its transform receipt and workspace log
+separately; a bare manual revision is not a pipeline lineage root.
 
 An abbreviated configuration looks like this:
 

@@ -320,6 +320,38 @@ class TransformCliWorkflowTests(DataJigCliTestCase):
             failed["next_actions"],
         )
 
+    def test_query_conversion_failure_preserves_actionable_diagnostic(self) -> None:
+        source = self.root / "duplicate-header.csv"
+        source.write_text("id,price\na,10\nid,price\nb,20\n", encoding="utf-8")
+
+        failed = self.run_cli(
+            "transform-plan",
+            "--input",
+            f"events={source}",
+            "--sql",
+            "SELECT id, CAST(price AS BIGINT) AS price FROM events ORDER BY id",
+            "--id-field",
+            "id",
+            "--output",
+            self.root / "prepared.jsonl",
+            "--plan",
+            self.root / "transform-plan.json",
+            expected_returncode=2,
+        ).payload
+
+        self.assertEqual("TRANSFORM_QUERY_FAILED", failed["error"]["code"])
+        self.assertIn("Conversion Error", failed["error"]["message"])
+        self.assertIn("price", failed["error"]["message"])
+        self.assertIn("INT64", failed["error"]["message"])
+        self.assertNotIn("LINE 1", failed["error"]["message"])
+        self.assertLessEqual(len(failed["error"]["message"].encode("utf-8")), 1024)
+        self.assertFalse((self.root / "prepared.jsonl").exists())
+        self.assertFalse((self.root / "transform-plan.json").exists())
+        self.assertEqual(
+            [{"command": "transform-plan", "args": ["--help"]}],
+            failed["next_actions"],
+        )
+
     def test_sql_file_is_embedded_in_the_plan_and_not_a_live_apply_dependency(self) -> None:
         source = self.root / "events.csv"
         source.write_text("id,value\na,1\nb,2\n", encoding="utf-8")
