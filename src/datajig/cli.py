@@ -695,6 +695,27 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
         )
         return 2
     stdout = completed.stdout
+    if completed.returncode == 0 and raw_args and raw_args[0] == "run":
+        from datajig.pipeline import PipelineError
+
+        try:
+            payload = json.loads(stdout)
+            if isinstance(payload, dict) and payload.get("kind") == "run_plan_accepted":
+                from datajig.run import execute_accepted_run
+
+                payload = execute_accepted_run(payload, Path.cwd())
+                stdout = (
+                    json.dumps(
+                        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    )
+                    + "\n"
+                )
+        except PipelineError as exc:
+            _print_pipeline_error(exc)
+            return 2
+        except (TypeError, ValueError) as exc:
+            _print_agent_error("RUN_EXECUTION_FAILED", str(exc), command="run")
+            return 2
     if completed.returncode == 0 and raw_args and raw_args[0] == "status":
         stdout = _augment_status_with_pipeline(stdout, raw_args)
     elif completed.returncode == 0 and raw_args and raw_args[0] == "capabilities":

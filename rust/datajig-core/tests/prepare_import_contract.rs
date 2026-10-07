@@ -114,6 +114,80 @@ fn direct_jsonl_prepares_objects_deterministically() {
 }
 
 #[test]
+fn generated_source_ids_are_injected_before_prepare_steps() {
+    let root = fixture_root("generated-source-id");
+    let source = root.join("source.csv");
+    fs::write(&source, "name,value\nalice,1\nbob,2\n").unwrap();
+    let recipe = root.join("recipe.json");
+    let recipe_value = json!({
+        "namespace": "datajig",
+        "kind": "prepare",
+        "schema_version": 1,
+        "source": {"format": "csv"},
+        "output": {"format": "jsonl"},
+        "id_field": "_datajig_source_id",
+        "generated_source_id": "_datajig_source_id",
+        "steps": [{"op": "select", "fields": ["name", "_datajig_source_id"]}]
+    });
+    fs::write(&recipe, serde_json::to_vec_pretty(&recipe_value).unwrap()).unwrap();
+    let output = root.join("prepared.jsonl");
+    let plan = root.join("plan.json");
+
+    let planned = plan_prepare(&source, &recipe, &output, &plan).unwrap();
+    apply_prepare(&plan, &planned.plan_id).unwrap();
+
+    let rows = fs::read_to_string(&output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(2, rows.len());
+    assert_eq!("alice", rows[0]["name"]);
+    assert_eq!("bob", rows[1]["name"]);
+    let first = rows[0]["_datajig_source_id"].as_str().unwrap();
+    let second = rows[1]["_datajig_source_id"].as_str().unwrap();
+    assert!(first.starts_with("srcrow_"));
+    assert!(second.starts_with("srcrow_"));
+    assert_ne!(first, second);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn generated_source_id_rejects_an_existing_reserved_column() {
+    let root = fixture_root("generated-source-id-conflict");
+    let source = root.join("source.csv");
+    fs::write(&source, "_datajig_source_id,value\nowned,1\n").unwrap();
+    let recipe = root.join("recipe.json");
+    let recipe_value = json!({
+        "namespace": "datajig",
+        "kind": "prepare",
+        "schema_version": 1,
+        "source": {"format": "csv"},
+        "output": {"format": "jsonl"},
+        "id_field": "_datajig_source_id",
+        "generated_source_id": "_datajig_source_id",
+        "steps": []
+    });
+    fs::write(&recipe, serde_json::to_vec_pretty(&recipe_value).unwrap()).unwrap();
+
+    let error = plan_prepare(
+        &source,
+        &recipe,
+        &root.join("prepared.jsonl"),
+        &root.join("plan.json"),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("already contains generated source id field")
+    );
+    assert!(!root.join("plan.json").exists());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn applied_output_is_idempotent_after_live_inputs_are_removed() {
     let fixture = direct_csv_plan_fixture("already-applied");
     let planned = plan_prepare(

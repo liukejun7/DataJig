@@ -30,6 +30,7 @@ SUITES = {
         "tests.test_pipeline_plan",
         "tests.test_pipeline_apply",
         "tests.test_pipeline_observability",
+        "tests.test_run_m2",
     ),
     "training-release": (
         "tests.test_build_hook",

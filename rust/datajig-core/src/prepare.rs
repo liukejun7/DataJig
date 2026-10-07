@@ -75,6 +75,8 @@ struct PrepareRecipe {
     source: PrepareSource,
     output: PrepareOutput,
     id_field: String,
+    #[serde(default)]
+    generated_source_id: Option<String>,
     steps: Vec<PrepareStep>,
 }
 
@@ -556,6 +558,9 @@ fn validate_recipe(recipe: &PrepareRecipe) -> Result<()> {
     validate_source_patterns(includes, "include")?;
     validate_source_patterns(ignores, "ignore")?;
     validate_field(&recipe.id_field)?;
+    if let Some(field) = &recipe.generated_source_id {
+        validate_field(field)?;
+    }
     if recipe.steps.len() > MAX_STEPS {
         return Err(InvalidArgumentError::new(format!(
             "preparation recipe exceeds {MAX_STEPS} steps"
@@ -611,7 +616,7 @@ fn execute<W: Write>(
     writer: W,
 ) -> Result<ExecutionSummary> {
     let mut execution = PrepareExecution::new(recipe, writer);
-    source.stream(&mut execution)?;
+    source.stream_with_generated_id(&mut execution, recipe.generated_source_id.as_deref())?;
     execution.finish()
 }
 

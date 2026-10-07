@@ -20,8 +20,8 @@ class RunControlTests(DataJigCliTestCase):
             "--accept-plan",
             artifact["plan_id"],
         ).payload
-        self.assertEqual("run_plan_accepted", resumed["kind"])
-        self.assertEqual("ready", resumed["decision"])
+        self.assertEqual("run_completed", resumed["kind"])
+        self.assertEqual("applied", resumed["decision"])
         self.assertEqual(artifact["attempt_id"], resumed["artifact"]["attempt_id"])
 
     def test_run_errors_remain_machine_actionable(self) -> None:
