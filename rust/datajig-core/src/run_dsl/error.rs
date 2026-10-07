@@ -9,6 +9,7 @@ pub struct RunDslError {
     pub position: usize,
     pub message: String,
     pub remediation: String,
+    pub suggestions: Box<[String]>,
 }
 
 impl RunDslError {
@@ -25,7 +26,13 @@ impl RunDslError {
             position,
             message: message.into(),
             remediation: remediation.into(),
+            suggestions: Vec::new().into_boxed_slice(),
         }
+    }
+
+    pub(crate) fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
+        self.suggestions = suggestions.into_boxed_slice();
+        self
     }
 
     pub(crate) fn internal(message: impl Into<String>) -> Self {
