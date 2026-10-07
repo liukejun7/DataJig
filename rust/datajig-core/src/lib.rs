@@ -142,7 +142,8 @@ pub use run_control::{
     RunConsumptionBinding, RunControlError, RunIdentities, RunLayout, RunPlanArtifact,
     RunPlanBinding, authorize_run, classify_run_output, create_run_plan, derive_run_identities,
     fingerprint_run_source, load_run_plan_for_resume, persist_run_plan, resolve_run_source_format,
-    validate_run_consumption_target, validate_run_source_output_separation,
+    validate_run_consumption_target, validate_run_source_consumption_separation,
+    validate_run_source_output_separation,
 };
 pub use run_dsl::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,

@@ -703,6 +703,29 @@ pub fn validate_run_source_output_separation(
     Ok(())
 }
 
+pub fn validate_run_source_consumption_separation(
+    source: &Path,
+    consumption: &RunConsumptionBinding,
+) -> Result<(), RunControlError> {
+    validate_relative_path(source, "source")?;
+    let run_dir = Path::new(&consumption.run_dir);
+    validate_run_public_path(run_dir, "run_dir")?;
+    let source_key = relative_path_comparison_key(source, "source")?;
+    let run_dir_key = relative_path_comparison_key(run_dir, "run_dir")?;
+    if source_key.starts_with(&run_dir_key) || run_dir_key.starts_with(&source_key) {
+        return Err(RunControlError::new(
+            "RUN_PATH_OVERLAP",
+            format!(
+                "source {} and consumption run_dir {} must not contain one another",
+                source.display(),
+                run_dir.display()
+            ),
+            "choose a training run directory outside the source tree",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_run_public_path(path: &Path, field: &str) -> Result<(), RunControlError> {
     validate_relative_path(path, field)?;
     let normalized = relative_path_comparison_key(path, field)?;

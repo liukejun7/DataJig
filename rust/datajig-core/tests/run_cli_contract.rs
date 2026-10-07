@@ -328,6 +328,34 @@ fn consumption_run_directory_must_not_overlap_delivery() {
 }
 
 #[test]
+fn consumption_run_directory_must_not_overlap_source() {
+    let root = TempDir::new();
+    fs::create_dir(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/rows.csv"), b"id\n1\n").unwrap();
+
+    let output = run(
+        root.path(),
+        &[
+            "run",
+            "from data source-id-field id export id-field id",
+            "--strict",
+            "--consume",
+            "--consumer",
+            "pytorch",
+            "--run-id",
+            "training-001",
+            "--run-dir",
+            "data/runs/training-001",
+        ],
+    );
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RUN_PATH_OVERLAP");
+    assert!(!root.path().join(".datajig").exists());
+}
+
+#[test]
 fn consumption_run_directory_must_be_new_at_plan_and_resume_time() {
     let root = TempDir::new();
     fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
@@ -495,6 +523,25 @@ fn direct_file_format_mismatch_is_rejected_before_plan_persistence() {
     assert!(!output.status.success());
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "SOURCE_FORMAT_MISMATCH");
+    assert!(!root.path().join(".datajig").exists());
+}
+
+#[test]
+fn source_identity_field_limit_is_enforced_before_plan_persistence() {
+    let root = TempDir::new();
+    fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+    let long_field = "x".repeat(1025);
+    let task = format!("from rows.csv source-id-field {long_field} export id-field {long_field}");
+
+    let output = run(root.path(), &["run", &task, "--strict"]);
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
+    assert_eq!(
+        error["error"]["details"]["location"],
+        "source.source-id-field"
+    );
     assert!(!root.path().join(".datajig").exists());
 }
 

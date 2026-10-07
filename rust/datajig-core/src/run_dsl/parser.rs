@@ -6,6 +6,7 @@ use super::ast::{
     SourceIdMode, TrainingSplitsAst, canonicalize_run_task, sql_identifier,
 };
 use super::lexer::{Token, TokenKind, lex};
+use crate::prepare::MAX_FIELD_BYTES;
 use crate::{TransformLimits, validate_transform_query};
 use serde_json::{Number, Value};
 use std::collections::BTreeSet;
@@ -131,6 +132,7 @@ impl Parser {
                 "add `id-field <field>` after the export split settings",
             ));
         };
+        validate_field_contract(&id_field, "export.id-field", id_field_position)?;
         if self.cursor != self.tokens.len() {
             return Err(self.error(
                 "INVALID_DSL",
@@ -267,6 +269,11 @@ impl Parser {
             let (alias, alias_position) = self.take_value(
                 &format!("transform.aggregate[{index}].alias"),
                 "use `<alias>=count(<field>)` or sum/avg/min/max",
+            )?;
+            validate_field_contract(
+                &alias,
+                &format!("transform.aggregate[{index}].alias"),
+                alias_position,
             )?;
             if alias == by || alias == RESERVED_SOURCE_ID || !aliases.insert(alias.clone()) {
                 return Err(RunDslError::new(
@@ -744,6 +751,7 @@ fn is_prepare_step_start(token: &Token) -> bool {
 }
 
 fn reject_reserved_field(field: &str, location: &str, position: usize) -> Result<(), RunDslError> {
+    validate_field_contract(field, location, position)?;
     if field == RESERVED_SOURCE_ID {
         return Err(RunDslError::new(
             "RESERVED_FIELD_CONFLICT",
@@ -751,6 +759,23 @@ fn reject_reserved_field(field: &str, location: &str, position: usize) -> Result
             position,
             format!("`{RESERVED_SOURCE_ID}` is reserved for source-id-field auto"),
             "rename the input field or remove the explicit reserved-field reference",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_field_contract(
+    field: &str,
+    location: &str,
+    position: usize,
+) -> Result<(), RunDslError> {
+    if field.is_empty() || field.len() > MAX_FIELD_BYTES {
+        return Err(RunDslError::new(
+            "INVALID_DSL",
+            location,
+            position,
+            format!("field names must be between 1 and {MAX_FIELD_BYTES} bytes"),
+            format!("use a UTF-8 field name no longer than {MAX_FIELD_BYTES} bytes"),
         ));
     }
     Ok(())
