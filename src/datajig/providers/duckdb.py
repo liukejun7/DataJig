@@ -432,7 +432,16 @@ def _stream_result(
 def _query_execution_error(
     error: Exception, sql: str, parameters: Sequence[object]
 ) -> ProviderError:
-    diagnostic = str(error).split("\n\n", 1)[0]
+    sensitive_values = {
+        match.group(0)[1:-1].replace("''", "'")
+        for match in _SQL_STRING_LITERAL.finditer(sql)
+    }
+    sensitive_values.update(value for value in parameters if isinstance(value, str))
+    raw_diagnostic = str(error)
+    for value in sorted(sensitive_values, key=len, reverse=True):
+        if value:
+            raw_diagnostic = raw_diagnostic.replace(value, "<redacted-sql-literal>")
+    diagnostic = raw_diagnostic.split("\n\n", 1)[0]
     diagnostic = " ".join(
         line.strip()
         for line in diagnostic.splitlines()
@@ -441,14 +450,13 @@ def _query_execution_error(
     diagnostic = "".join(
         character if ord(character) >= 32 else " " for character in diagnostic
     ).strip()
-    sensitive_values = {
-        match.group(0)[1:-1].replace("''", "'")
-        for match in _SQL_STRING_LITERAL.finditer(sql)
-    }
-    sensitive_values.update(value for value in parameters if isinstance(value, str))
     for value in sorted(sensitive_values, key=len, reverse=True):
-        if value:
-            diagnostic = diagnostic.replace(value, "<redacted-sql-literal>")
+        normalized = " ".join(part.strip() for part in value.splitlines() if part.strip())
+        normalized = "".join(
+            character if ord(character) >= 32 else " " for character in normalized
+        ).strip()
+        if normalized:
+            diagnostic = diagnostic.replace(normalized, "<redacted-sql-literal>")
     if not diagnostic:
         diagnostic = type(error).__name__
     message = _bounded_utf8(f"DuckDB query failed: {diagnostic}", 1024)

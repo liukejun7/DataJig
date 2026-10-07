@@ -425,6 +425,29 @@ class DuckDbProviderTest(unittest.TestCase):
             self.assertIn("INT64", response["error"]["message"])
             self.assertFalse(candidate.exists())
 
+    def test_query_diagnostic_redacts_multiline_literals_and_bound_strings(self) -> None:
+        cases = (
+            (
+                RuntimeError("Conversion Error: Could not convert 'SQL_SECRET\nABC' to INT64"),
+                "SELECT CAST('SQL_SECRET\nABC' AS BIGINT)",
+                [],
+                ("SQL_SECRET", "ABC"),
+            ),
+            (
+                RuntimeError("Conversion Error: Could not convert 'BOUND_SECRET ABC' to INT64"),
+                "SELECT CAST(? AS BIGINT)",
+                ["BOUND_SECRET\nABC"],
+                ("BOUND_SECRET", "ABC"),
+            ),
+        )
+
+        for error, sql, parameters, forbidden in cases:
+            with self.subTest(sql=sql):
+                diagnostic = provider._query_execution_error(error, sql, parameters)
+                self.assertIn("<redacted-sql-literal>", diagnostic.message)
+                for value in forbidden:
+                    self.assertNotIn(value, diagnostic.message)
+
     def test_missing_duckdb_is_a_structured_provider_error(self) -> None:
         with mock.patch.object(
             provider, "_import_duckdb", side_effect=ModuleNotFoundError("No module named duckdb")
