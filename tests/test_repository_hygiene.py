@@ -20,8 +20,8 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             (REPOSITORY_ROOT / "rust" / "datajig-core" / "Cargo.toml").read_text()
         )
 
-        self.assertEqual("0.8.4", metadata["project"]["version"])
-        self.assertEqual("0.8.4", rust_metadata["package"]["version"])
+        self.assertEqual("0.9.0", metadata["project"]["version"])
+        self.assertEqual("0.9.0", rust_metadata["package"]["version"])
         self.assertEqual("PYPI.md", metadata["project"]["readme"])
         self.assertEqual(
             [{"name": "Kejun Liu", "email": "liukj7@gmail.com"}],
@@ -65,10 +65,13 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             self.assertIn('src="./assets/datajig-hero.png"', readme)
             self.assertNotIn("raw.githubusercontent.com", readme)
 
-    def test_public_readme_badges_do_not_depend_on_private_repository_metadata(self) -> None:
+    def test_public_readme_badges_match_public_repository_metadata(self) -> None:
         english_readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
 
-        self.assertNotIn("actions/workflows/ci.yml/badge.svg", english_readme)
+        self.assertIn(
+            "github.com/liukejun7/DataJig/actions/workflows/ci.yml/badge.svg",
+            english_readme,
+        )
         self.assertNotIn("img.shields.io/github/license", english_readme)
         self.assertIn("img.shields.io/badge/Python-3.11%2B", english_readme)
         self.assertIn("img.shields.io/badge/License-Apache--2.0", english_readme)

@@ -8,9 +8,10 @@ It wraps data work in explicit plans, deterministic identities, semantic checks,
 immutable revisions, and evidence of which records crossed a verified training
 adapter boundary.
 
-Version 0.8.4 makes active changeset selectors consistent, publishes the full
-JSONL quality-policy schema and example, and allows guarded patch application on
-filesystems that explicitly do not support extended attributes.
+Version 0.9.0 adds a deterministic task compiler and recoverable `run` control
+plane. A bounded task can now produce a canonical plan, immutable revision,
+training bundle, and independently verifiable run receipt through the same
+transactional pipeline used by the lower-level API.
 
 ```text
 raw source -> pin -> prepare/transform -> review -> seal -> export -> train
@@ -70,8 +71,23 @@ datajig repository-check --root .
 
 ## Typical workflow
 
-For a complete local training-data delivery, install the DuckDB extra and use a
-single reviewed pipeline:
+For a complete local training-data delivery, install the DuckDB extra and run a
+bounded task directly:
+
+```bash
+datajig run 'from data/rows.csv source-id-field id export id-field id' \
+  --strict --output training-data
+datajig run --resume attempt_... --accept-plan plan_...
+datajig status --state .datajig/runs/intent_.../workspace/state --format text
+datajig lineage runrcpt_... --state .datajig
+```
+
+Common Chinese task templates compile through the same canonical DSL. Tasks
+outside the deterministic boundary return `UNSUPPORTED_TASK` with actionable
+guidance rather than being guessed. Run receipts connect source, intent, plan,
+attempt, revision, bundle, and consumption identities.
+
+For lower-level control, use a single reviewed pipeline:
 
 ```bash
 datajig artifact-schema pipeline-config
@@ -88,7 +104,7 @@ HEAD compare-and-swap, and a delivery commit marker. Interrupted work requires
 explicit `--resume`; an identical update still delivers a bundle and consumer
 plans without inventing a new revision.
 
-`lineage` resolves committed pipeline receipts and related pipeline artifacts.
+`lineage` resolves committed pipeline and run receipts and their related artifacts.
 For an atomic manual workflow, inspect its transform receipt and workspace log
 separately; a bare manual revision is not a pipeline lineage root.
 

@@ -24,7 +24,7 @@ raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → �
 如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
 会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.8.4` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.9.0` · Agent 原生任务编译器 · 可恢复 run · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## DataJig 在技术栈中的位置
 
@@ -59,6 +59,22 @@ SQL 处理时，再安装精确锁定版本的 DuckDB provider：
 ```bash
 python -m pip install 'datajig[duckdb]'
 ```
+
+## 一句话交付可训练数据
+
+0.9 的 `run` 会把有边界的任务编译为 canonical plan，并复用同一条 Pipeline
+事务路径生成不可变 revision、训练 bundle 与 `runrcpt_...` 证据：
+
+```bash
+datajig run '整理 data/rows.csv' --strict --output training-data
+datajig run --resume attempt_... --accept-plan plan_...
+datajig status --state .datajig/runs/intent_.../workspace/state --format text
+datajig lineage runrcpt_... --state .datajig
+```
+
+超出确定性边界的任务会稳定返回 `UNSUPPORTED_TASK`，同时给出位置、建议、修复方式
+和下一步动作，不会猜测执行。run receipt 仅在完整提交后出现，并将 source、intent、
+plan、attempt、revision、bundle 与 consumption 串成可重新验证的证据链。
 
 ## 一份 YAML 交付可训练数据
 

@@ -3,6 +3,34 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] - 2026-10-07
+
+### Added
+
+- An agent-native `run` command that compiles bounded task text into a canonical
+  source/prepare/transform/export AST and reuses the existing transactional
+  pipeline for execution.
+- Layered `intent_`, `plan_`, and `attempt_` identities, strict two-phase plan
+  acceptance, explicit authorization, isolated run workspaces, and forward-only
+  crash recovery.
+- Deterministic Chinese task templates for common preparation, aggregation, and
+  training-split requests, with stable `UNSUPPORTED_TASK` guidance outside the
+  supported boundary.
+- Append-only `runrcpt_` execution evidence and complete source-to-consumption
+  lineage, plus a discoverable `run-receipt` artifact schema.
+- Run-aware `status --format json|text`, a bounded rebuildable status index, and
+  reporting for recent runs, recoverable attempts, and pending cleanup.
+- A CI-gated 20-scenario run benchmark: 16 supported journeys and four stable
+  unsupported classes.
+
+### Changed
+
+- CSV, JSONL, Parquet, and same-format directory sources can now reach a verified
+  training bundle through one task command; automatic source IDs remain explicit
+  opt-in and are generated before preparation.
+- CI runs the run benchmark as an independent integration shard and release
+  workflows continue to produce four attested Linux/macOS wheels.
+
 ## [0.8.4] - 2026-10-07
 
 ### Added
