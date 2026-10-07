@@ -167,6 +167,10 @@ deterministic id in transform SQL before DataJig versions it.""",
     )
     tutorial_parser.add_argument("output", type=Path)
 
+    subparsers.add_parser(
+        "run", help="compile and accept a deterministic data-to-training run plan"
+    )
+
     init_parser = subparsers.add_parser(
         "init", help="track a dataset and record its last-good baseline"
     )

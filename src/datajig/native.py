@@ -35,6 +35,7 @@ NATIVE_WORKSPACE_COMMANDS = frozenset(
         "log",
         "materialize",
         "review-plan",
+        "run",
         "seal",
         "status",
         "tutorial",
