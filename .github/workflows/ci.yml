@@ -154,8 +154,8 @@ jobs:
     permissions:
       contents: write
     env:
-      PREVIEW_TAG: v0.9.0-m1-preview.2
-      PREVIEW_ARCHIVE: datajig-0.9-m1-preview-linux-x86_64.tar.gz
+      PREVIEW_TAG: v0.9.0-m1-preview.1
+      PREVIEW_ARCHIVE: datajig-0.9-m1-preview-ubuntu-22.04-x86_64.tar.gz
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
