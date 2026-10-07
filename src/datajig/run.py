@@ -16,6 +16,7 @@ from datajig.pipeline import (
     PipelineError,
     apply_pipeline,
     create_pipeline_plan,
+    garbage_collect_pipelines,
     read_pipeline_artifact,
 )
 
@@ -337,7 +338,6 @@ def run_status(state: Path) -> dict[str, object] | None:
             )
         }
     recoverable: list[dict[str, str]] = []
-    pending_gc = 0
     for attempt in sorted((datajig / "runs").glob("*/attempts/attempt_*")):
         intent = attempt.parents[1].name
         receipt_path = datajig / "runs" / intent / "receipts" / f"{attempt.name}.json"
@@ -352,10 +352,11 @@ def run_status(state: Path) -> dict[str, object] | None:
                     "attempt_id": attempt.name,
                 }
             )
-        else:
-            pending_gc += 1
         if len(recoverable) == 64:
             break
+    gc = garbage_collect_pipelines(state, dry_run=True)
+    raw_pending_gc = gc.get("completed_attempts")
+    pending_gc = raw_pending_gc if isinstance(raw_pending_gc, int) else 0
     return {
         "recent_run": recent,
         "recoverable_runs": recoverable,
@@ -445,6 +446,17 @@ def _load_or_rebuild_run_index(datajig: Path) -> list[dict[str, object]]:
             if receipt.get("run_receipt_id") != entry.get("run_receipt_id"):
                 raise PipelineError("RUN_INDEX_CORRUPT", "Run index identity is stale")
             entries.append(dict(entry))
+        indexed_paths = [str(entry["path"]) for entry in entries]
+        current_paths = [
+            path.relative_to(datajig).as_posix()
+            for path in sorted(
+                (datajig / "runs").glob("*/receipts/*.json"),
+                key=lambda path: path.stat().st_mtime_ns,
+                reverse=True,
+            )[:64]
+        ]
+        if indexed_paths != current_paths:
+            raise PipelineError("RUN_INDEX_CORRUPT", "Run index membership is stale")
         return entries
     except (OSError, PipelineError):
         return _refresh_run_index(datajig)

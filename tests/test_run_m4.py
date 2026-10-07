@@ -124,7 +124,13 @@ class RunM4ObservabilityTests(DataJigCliTestCase):
         self.assertEqual([planned["attempt_id"]], [
             item["attempt_id"] for item in status["recoverable_runs"]
         ])
+        self.assertEqual(0, status["pending_run_gc"])
         self.assertEqual("run_index", json.loads(index.read_text())["kind"])
+        stale = json.loads(index.read_text())
+        stale["entries"] = []
+        index.write_text(json.dumps(stale), encoding="utf-8")
+        repaired = self.run_cli("status", "--state", state).payload["artifact"]
+        self.assertEqual(completed["run_receipt_id"], repaired["recent_run"]["run_receipt_id"])
 
 
 if __name__ == "__main__":
