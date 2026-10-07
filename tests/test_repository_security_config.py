@@ -47,6 +47,16 @@ class RepositorySecurityConfigurationTests(unittest.TestCase):
         self.assertLess(attestation, publish.index("gh release upload"))
         self.assertLess(attestation, publish.index("pypa/gh-action-pypi-publish@"))
 
+    def test_release_caller_authorizes_the_optional_nested_preview_job(self) -> None:
+        publish = (ROOT / ".github" / "workflows" / "publish.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertRegex(
+            publish,
+            r"  build:\n    permissions:\n      contents: write\n    uses:",
+        )
+
     def test_codeql_and_scorecard_upload_security_results(self) -> None:
         codeql = (ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
         scorecard = (ROOT / ".github" / "workflows" / "scorecard.yml").read_text(
