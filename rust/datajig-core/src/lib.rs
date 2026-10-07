@@ -25,6 +25,7 @@ mod report_query;
 mod repository_integration;
 mod review;
 mod revision;
+mod run_dsl;
 mod strict_json;
 mod tabular_inspect;
 mod tabular_source;
@@ -134,6 +135,11 @@ pub use review::{MAX_PHASH_THRESHOLD, MAX_REVIEW_MATCH_CANDIDATES, ReviewArtifac
 pub use revision::{
     DatasetRevision, MAX_REVISION_BYTES, RECORD_REVISION_SCHEMA_VERSION, REVISION_SCHEMA_VERSION,
     RevisionProvenance, TRANSFORM_LINEAGE_REVISION_SCHEMA_VERSION, TransformLineage,
+};
+pub use run_dsl::{
+    CompiledRunTask, PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunDslError,
+    RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat,
+    SourceIdAst, SourceIdMode, TrainingSplitsAst, canonicalize_run_task,
 };
 #[cfg(unix)]
 use std::ffi::OsString;
