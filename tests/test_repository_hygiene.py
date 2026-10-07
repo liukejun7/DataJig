@@ -118,6 +118,7 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         expected = {
             "requirements/ci.txt",
             "requirements/ci-duckdb.txt",
+            "requirements/ci-manylinux2014.txt",
             "requirements/wheels-linux.txt",
             "requirements/wheels-macos.txt",
         }
@@ -142,6 +143,16 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         )
         self.assertIn("python -m pip install -r requirements/wheels-linux.txt", wheels)
         self.assertIn("python -m pip install -r requirements/wheels-macos.txt", wheels)
+        self.assertIn(
+            "--constraint requirements/ci-manylinux2014.txt --only-binary=:all:",
+            wheels,
+        )
+        manylinux_constraints = (
+            REPOSITORY_ROOT / "requirements" / "ci-manylinux2014.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("numpy==2.2.6", manylinux_constraints)
+        self.assertIn("Pillow==12.2.0", manylinux_constraints)
+        self.assertIn("scipy==1.16.3", manylinux_constraints)
         self.assertGreaterEqual(wheels.count("python -m build --no-isolation"), 2)
         self.assertIsNone(re.search(r"pip install[^\n]*[~><]=?", ci))
         self.assertIsNone(re.search(r"pip install[^\n]*[~><]=?", wheels))
