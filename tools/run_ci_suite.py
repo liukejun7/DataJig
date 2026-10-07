@@ -18,6 +18,8 @@ SUITES = {
         "tests.test_patch_transactions",
         "tests.test_prepare_directories",
         "tests.test_repository_cli",
+        "tests.test_run_control",
+        "tests.test_run_security_regressions",
         "tests.test_small_shards",
         "tests.test_trust_boundaries",
         "tests.test_workspace_workflows",
@@ -30,6 +32,12 @@ SUITES = {
         "tests.test_pipeline_apply",
         "tests.test_pipeline_observability",
     ),
+    "run-benchmark": (
+        "tests.test_run_m2",
+        "tests.test_run_m3",
+        "tests.test_run_m4",
+        "tests.test_run_unsupported_benchmark",
+    ),
     "training-release": (
         "tests.test_build_hook",
         "tests.test_cli_discovery",
@@ -39,6 +47,13 @@ SUITES = {
         "tests.test_tutorial",
     ),
 }
+
+RUN_BENCHMARK_SUPPORTED = (
+    "tests.test_run_m2",
+    "tests.test_run_m3",
+    "tests.test_run_m4",
+)
+RUN_BENCHMARK_UNSUPPORTED = ("tests.test_run_unsupported_benchmark",)
 
 
 def validate_suite_coverage() -> None:
@@ -53,6 +68,14 @@ def validate_suite_coverage() -> None:
         raise SystemExit(
             "invalid CI suite coverage: "
             f"duplicates={duplicates}, missing={missing}, unknown={unknown}"
+        )
+    loader = unittest.defaultTestLoader
+    supported = loader.loadTestsFromNames(RUN_BENCHMARK_SUPPORTED).countTestCases()
+    unsupported = loader.loadTestsFromNames(RUN_BENCHMARK_UNSUPPORTED).countTestCases()
+    if (supported, unsupported) != (16, 4):
+        raise SystemExit(
+            "invalid DataJig 0.9 run benchmark: "
+            f"supported={supported}/16, unsupported={unsupported}/4"
         )
 
 

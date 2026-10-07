@@ -257,7 +257,7 @@ impl TransformProviderIdentity {
         ))
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.protocol != "datajig.transform-provider.v1"
             || self.protocol_version != TRANSFORM_PROVIDER_PROTOCOL_VERSION
             || self.implementation != "datajig-duckdb-python"

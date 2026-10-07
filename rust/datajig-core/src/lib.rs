@@ -25,6 +25,8 @@ mod report_query;
 mod repository_integration;
 mod review;
 mod revision;
+mod run_control;
+mod run_dsl;
 mod strict_json;
 mod tabular_inspect;
 mod tabular_source;
@@ -135,6 +137,22 @@ pub use revision::{
     DatasetRevision, MAX_REVISION_BYTES, RECORD_REVISION_SCHEMA_VERSION, REVISION_SCHEMA_VERSION,
     RevisionProvenance, TRANSFORM_LINEAGE_REVISION_SCHEMA_VERSION, TransformLineage,
 };
+pub use run_control::{
+    AuthorizationLevel, AuthorizationStatus, RUN_PLAN_SCHEMA_VERSION, RunAuthorizationDecision,
+    RunConsumptionBinding, RunControlError, RunIdentities, RunLayout, RunPlanArtifact,
+    RunPlanBinding, authorize_run, classify_run_output, create_run_plan, derive_run_identities,
+    fingerprint_run_source, load_run_plan_for_resume, persist_run_plan, resolve_run_source_format,
+    validate_run_consumption_target, validate_run_output_target,
+    validate_run_source_consumption_separation, validate_run_source_output_separation,
+};
+pub use run_dsl::{
+    AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
+    DeterministicPhraseTranslator, FilterPredicateAst, MissingModeAst, PrepareStepAst,
+    RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunDslError, RunExportAst, RunPrepareAst,
+    RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat, SourceIdAst, SourceIdMode,
+    TaskTranslator, TrainingSplitsAst, canonicalize_run_task, compile_dsl, compile_task,
+    compile_task_with_translator,
+};
 #[cfg(unix)]
 use std::ffi::OsString;
 #[cfg(unix)]
@@ -160,7 +178,7 @@ pub use training_consumption::{
     ConsumptionNotAuthorizedError, StaleConsumptionInputError, TRAINING_CONSUMPTION_CLAIM,
     TRAINING_CONSUMPTION_PLAN_SCHEMA_VERSION, TRAINING_CONSUMPTION_RECEIPT_SCHEMA_VERSION,
     TrainingConsumptionPlanArtifact, TrainingConsumptionRuntime, inspect_training_consumption,
-    plan_training_consumption,
+    plan_training_consumption, plan_training_consumption_for_publication,
 };
 pub use transform::{
     MAX_TRANSFORM_INPUTS, MAX_TRANSFORM_OUTPUT_BYTES, MAX_TRANSFORM_OUTPUT_FIELDS,

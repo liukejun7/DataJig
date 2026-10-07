@@ -2,7 +2,39 @@ name: Platform wheels
 
 on:
   workflow_call:
+    inputs:
+      publish_preview:
+        description: Publish the wheels as a testing-only checkpoint release
+        required: false
+        type: boolean
+        default: false
+      preview_tag:
+        description: Tag used for the testing-only checkpoint release
+        required: false
+        type: string
+        default: v0.9.0-preview
+      preview_title:
+        description: Title used for the testing-only checkpoint release
+        required: false
+        type: string
+        default: DataJig 0.9 testing preview
   workflow_dispatch:
+    inputs:
+      publish_preview:
+        description: Publish the wheels as a testing-only checkpoint release
+        required: false
+        type: boolean
+        default: false
+      preview_tag:
+        description: Tag used for the testing-only checkpoint release
+        required: false
+        type: string
+        default: v0.9.0-preview
+      preview_title:
+        description: Title used for the testing-only checkpoint release
+        required: false
+        type: string
+        default: DataJig 0.9 testing preview
 
 permissions:
   contents: read
@@ -49,13 +81,13 @@ jobs:
             "$MANYLINUX_IMAGE" \
             bash -euxo pipefail -c '
               export PATH="$CARGO_HOME/bin:/opt/python/cp311-cp311/bin:$PATH"
-              python -m pip install "build>=1.2,<2" "auditwheel>=6,<7" "twine>=6,<7"
-              python -m build --wheel --outdir dist/native
+              python -m pip install -r requirements/wheels-linux.txt
+              python -m build --no-isolation --wheel --outdir dist/native
               auditwheel repair dist/native/*.whl --wheel-dir dist/wheel --plat "${{ matrix.platform }}"
               auditwheel show dist/wheel/*.whl
               python -m twine check dist/wheel/*.whl
               python -m venv /tmp/datajig-wheel-smoke
-              /tmp/datajig-wheel-smoke/bin/python -m pip install --only-binary=:all: dist/wheel/*.whl
+              /tmp/datajig-wheel-smoke/bin/python -m pip install --constraint requirements/ci.txt --only-binary=:all: dist/wheel/*.whl
               /tmp/datajig-wheel-smoke/bin/datajig tutorial /tmp/datajig-wheel-tutorial > /tmp/datajig-wheel-tutorial.json
               /tmp/datajig-wheel-smoke/bin/python - <<"PY"
           import json
@@ -125,15 +157,15 @@ jobs:
           target: ${{ matrix.target }}
       - name: Build native wheel
         run: |
-          python -m pip install "build>=1.2,<2" "delocate>=0.12,<1" "twine>=6,<7"
-          python -m build --wheel --outdir dist/native
+          python -m pip install -r requirements/wheels-macos.txt
+          python -m build --no-isolation --wheel --outdir dist/native
           delocate-wheel --require-archs "${{ matrix.arch }}" --wheel-dir dist/wheel dist/native/*.whl
           delocate-listdeps dist/wheel/*.whl
           python -m twine check dist/wheel/*.whl
       - name: Smoke test installed artifact
         run: |
           python -m venv /tmp/datajig-wheel-smoke
-          /tmp/datajig-wheel-smoke/bin/python -m pip install --only-binary=:all: dist/wheel/*.whl
+          /tmp/datajig-wheel-smoke/bin/python -m pip install --constraint requirements/ci.txt --only-binary=:all: dist/wheel/*.whl
           /tmp/datajig-wheel-smoke/bin/datajig tutorial /tmp/datajig-wheel-tutorial > /tmp/datajig-wheel-tutorial.json
           /tmp/datajig-wheel-smoke/bin/python - <<'PY'
           import json
@@ -172,3 +204,50 @@ jobs:
           name: datajig-macos-${{ matrix.arch }}
           path: dist/wheel/*.whl
           if-no-files-found: error
+
+  preview-release:
+    name: Publish checkpoint preview
+    if: inputs.publish_preview
+    needs:
+      - linux
+      - macos
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: datajig-*
+          path: dist
+          merge-multiple: true
+      - name: Verify preview wheel set
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          assert len(wheels) == 4, f"expected four preview wheels, found: {wheels}"
+          expected = {
+              "manylinux_2_17_x86_64",
+              "manylinux_2_17_aarch64",
+              "macosx_10_12_x86_64",
+              "macosx_11_0_arm64",
+          }
+          names = {wheel.name for wheel in wheels}
+          for platform in expected:
+              assert any(platform in name for name in names), (platform, names)
+          PY
+      - name: Publish testing-only preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_TAG: ${{ inputs.preview_tag }}
+          PREVIEW_TITLE: ${{ inputs.preview_title }}
+        run: |
+          notes="Testing-only wheels for commit $GITHUB_SHA. Includes the Rust backend and Python control plane for Linux and macOS. This is not a production release and is not published to PyPI."
+          if gh release view "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --clobber dist/*.whl
+          else
+            gh release create "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --prerelease \
+              --title "$PREVIEW_TITLE" --notes "$notes" dist/*.whl
+          fi

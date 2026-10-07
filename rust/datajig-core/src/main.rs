@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use datajig_core::{
-    AGENT_API_VERSION, COMMAND_SCHEMA_VERSION, ConcurrentModificationError,
+    AGENT_API_VERSION, AuthorizationStatus, COMMAND_SCHEMA_VERSION, ConcurrentModificationError,
     ConsumptionNotAuthorizedError, DEFAULT_TRAINING_SHARD_BYTES, DEFAULT_TRAINING_SHARD_RECORDS,
     EmptyViewError, FindingNotFoundError, HfImportNotAuthorizedError, InvalidArgumentError,
     InvalidRecipeError, MAX_COMPACT_FINDINGS, MAX_COMPACT_JSON_CHARS, MAX_DIFF_PAGE_SIZE,
@@ -8,26 +8,32 @@ use datajig_core::{
     MAX_REVIEW_MATCH_CANDIDATES, MAX_REVISION_PAGE_SIZE, OutputExistsError, PatchConflictError,
     PatchNotAuthorizedError, PrepareInvalidDataError, PrepareNotAuthorizedError,
     RepositoryComponents, RepositoryConflictError, RevisionContentCorruptError,
-    RevisionContentUnavailableError, Severity, StaleConsumptionInputError, StalePrepareInputError,
+    RevisionContentUnavailableError, RunConsumptionBinding, RunControlError, RunDslError,
+    RunPlanArtifact, RunPlanBinding, Severity, StaleConsumptionInputError, StalePrepareInputError,
     TrainingExportConfig, TransformDriftError, TransformInputSpec, TransformNotAuthorizedError,
     TransformOutputError, TransformOutputErrorKind, TransformProviderExecutionError,
-    TransformProviderProtocolError, TransformProviderTimeoutError, TransformSourceFormat,
-    UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError, WorkspaceLock, WorkspaceStore,
-    agent_contract_id, apply_hf_import, apply_jsonl_patch, apply_prepare, artifact_schema,
-    artifact_schema_names, begin_changeset, check_changeset, check_repository, check_subset_view,
-    check_workspace, command_catalog, command_descriptor, command_names, compact_summary,
-    compare_and_swap_workspace_head, create_inventory, create_review, create_snapshot,
+    TransformProviderIdentity, TransformProviderProtocolError, TransformProviderTimeoutError,
+    TransformSourceFormat, UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError,
+    WorkspaceLock, WorkspaceStore, agent_contract_id, apply_hf_import, apply_jsonl_patch,
+    apply_prepare, artifact_schema, artifact_schema_names, begin_changeset, check_changeset,
+    check_repository, check_subset_view, check_workspace, classify_run_output, command_catalog,
+    command_descriptor, command_names, compact_summary, compare_and_swap_workspace_head,
+    compile_task, create_inventory, create_review, create_run_plan, create_snapshot,
     diff_jsonl_records, diff_manifests, draft_jsonl_patch,
     export_training_bundle_with_view_at_detached_revision,
-    export_training_bundle_with_view_at_revision, get_finding,
+    export_training_bundle_with_view_at_revision, fingerprint_run_source, get_finding,
     initialize_jsonl_workspace_with_receipt, initialize_workspace, inspect_jsonl, inspect_tabular,
     inspect_training_bundle_with_consumer, inspect_training_consumption, inspect_transform,
     install_repository, is_patchable_quality_code, list_findings, load_manifest, load_report,
-    locate_changeset_finding, manifest_diff_page, materialize_revision, plan_changeset,
-    plan_hf_import, plan_prepare, plan_training_consumption, plan_transform, plan_workspace,
-    preview_jsonl_patch, resolve_change_selector, resolve_optional_changeset_context, revision_log,
-    run_tutorial, seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset,
-    status_changeset, status_workspace, undo_jsonl_patch, write_agent_skill,
+    load_run_plan_for_resume, locate_changeset_finding, manifest_diff_page, materialize_revision,
+    persist_run_plan, plan_changeset, plan_hf_import, plan_prepare, plan_training_consumption,
+    plan_training_consumption_for_publication, plan_transform, plan_workspace, preview_jsonl_patch,
+    resolve_change_selector, resolve_optional_changeset_context, resolve_run_source_format,
+    revision_log, run_tutorial, seal_changeset, seal_changeset_detached, seal_workspace,
+    stage_changeset, status_changeset, status_workspace, undo_jsonl_patch,
+    validate_run_consumption_target, validate_run_output_target,
+    validate_run_source_consumption_separation, validate_run_source_output_separation,
+    write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -79,7 +85,7 @@ enum Command {
     },
     /// Return a machine-readable input artifact contract.
     #[command(
-        after_help = "Available artifacts:\n  jsonl-field-patch\n  jsonl-quality-policy\n  pipeline-config\n  prepare-recipe\n  repository-integration\n  subset-view\n  training-consumption-plan\n  training-consumption-receipt\n  transform-plan\n  transform-receipt"
+        after_help = "Available artifacts:\n  jsonl-field-patch\n  jsonl-quality-policy\n  pipeline-config\n  prepare-recipe\n  repository-integration\n  run-receipt\n  subset-view\n  training-consumption-plan\n  training-consumption-receipt\n  transform-plan\n  transform-receipt"
     )]
     ArtifactSchema {
         /// Optional artifact name; omit to list supported schemas.
@@ -96,6 +102,49 @@ enum Command {
     Tutorial {
         /// New directory that will contain the example dataset, workspace, and bundle.
         output: PathBuf,
+    },
+    /// Compile, authorize, and persist a deterministic data-to-training run plan.
+    #[command(
+        after_help = "Examples:\n  datajig run 'from data/rows.csv source-id-field id export id-field id'\n  datajig run '整理 data/rows.csv' --strict\n  datajig run --resume <ATTEMPT_ID> --accept-plan <PLAN_ID>"
+    )]
+    Run {
+        /// DataJig DSL v1 task or one supported deterministic phrase.
+        #[arg(
+            value_name = "TASK",
+            required_unless_present = "resume",
+            conflicts_with = "resume"
+        )]
+        task: Option<String>,
+        /// Stop after persisting the immutable plan and require exact acceptance.
+        #[arg(long)]
+        strict: bool,
+        /// Resume one exact persisted attempt.
+        #[arg(long, value_name = "ATTEMPT_ID", requires = "accept_plan")]
+        resume: Option<String>,
+        /// Exact plan identity accepted for --resume.
+        #[arg(long, value_name = "PLAN_ID", requires = "resume")]
+        accept_plan: Option<String>,
+        /// Authorize this invocation's dangerous operations; never overrides fatal checks.
+        #[arg(long)]
+        yes: bool,
+        /// Relative public delivery directory.
+        #[arg(long, default_value = "bundle")]
+        output: PathBuf,
+        /// Bind an optional training consumption plan to this run.
+        #[arg(long)]
+        consume: bool,
+        /// Consumption adapter: python, pytorch, or huggingface.
+        #[arg(long, requires = "consume")]
+        consumer: Option<String>,
+        /// Public external training-run identity.
+        #[arg(long, requires = "consume")]
+        run_id: Option<String>,
+        /// Consumer run-state directory included in consumption identity.
+        #[arg(long, requires = "consume")]
+        run_dir: Option<PathBuf>,
+        /// Provider identity bound by the Python control-plane entrypoint.
+        #[arg(long, hide = true, conflicts_with = "resume")]
+        provider_identity: Option<String>,
     },
     /// Initialize a project-local last-good baseline for a dataset.
     #[command(
@@ -190,6 +239,12 @@ enum Command {
         /// New consumption plan artifact.
         #[arg(long)]
         plan: PathBuf,
+        /// Final manifest path that an atomic publisher will expose with this plan.
+        #[arg(long, hide = true)]
+        published_manifest: Option<PathBuf>,
+        /// Final run directory that an atomic publisher will expose with this plan.
+        #[arg(long, hide = true, requires = "published_manifest")]
+        published_run_dir: Option<PathBuf>,
     },
     /// Verify one accepted training consumption plan and its live bundle.
     ConsumeInfo {
@@ -518,6 +573,9 @@ enum Command {
         /// Exact changeset_... ID or alias. Omit both selectors to inspect one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
+        /// Render the agent envelope as JSON or include a compact human summary.
+        #[arg(long, value_parser = ["json", "text"], default_value = "json")]
+        format: String,
     },
     /// Inspect an ImageFolder dataset and write a media inventory.
     Inventory {
@@ -653,7 +711,7 @@ fn main() {
             | "changeset-stage" | "review-plan" | "log" | "locate" | "patch-apply" | "patch-draft"
             | "patch-preview" | "patch-undo" | "hf-import-apply" | "hf-import-plan"
             | "prepare-apply" | "prepare-plan" | "repository-check" | "repository-install" | "seal"
-            | "status" | "transform-apply" | "transform-info" | "transform-plan",
+            | "status" | "transform-apply" | "transform-info" | "transform-plan" | "run",
         ) => "INVALID_ARGUMENT",
         _ => "ARGUMENT_ERROR",
     };
@@ -910,6 +968,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 "snapshot_manifests": true,
                 "repository_managed_agent_ci": cfg!(unix),
                 "agent_native_transforms": cfg!(unix),
+                "deterministic_run_planning": cfg!(unix),
             });
             let mut capabilities = json!({
                 "agent_api_version": AGENT_API_VERSION,
@@ -962,6 +1021,11 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             let object = capabilities
                 .as_object_mut()
                 .expect("capabilities document should be an object");
+            object.insert(
+                "run_plan_schema_versions".into(),
+                json!([datajig_core::RUN_PLAN_SCHEMA_VERSION]),
+            );
+            object.insert("run_layout".into(), json!("stable_intent_workspace"));
             object.insert(
                 "transform_plan_schema_versions".into(),
                 json!([datajig_core::TRANSFORM_PLAN_SCHEMA_VERSION]),
@@ -1083,6 +1147,89 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                     "artifact": artifact
                 })
             );
+        }
+        Command::Run {
+            task,
+            strict,
+            resume,
+            accept_plan,
+            yes,
+            output,
+            consume,
+            consumer,
+            run_id,
+            run_dir,
+            provider_identity,
+        } => {
+            let root =
+                std::env::current_dir().map_err(|error| ("RUN_PATH_INVALID", 2, error.into()))?;
+            if let Some(attempt_id) = resume {
+                let accepted_plan = accept_plan.as_deref().expect("clap requires --accept-plan");
+                let plan = load_run_plan_for_resume(&root, &attempt_id, accepted_plan)
+                    .map_err(run_control_command_error)?;
+                let live_authorization = reverify_resumed_run(&root, &plan)?;
+                emit_resumed_run_plan(plan, yes, live_authorization)?;
+            } else {
+                let task = task.as_deref().expect("clap requires a task or --resume");
+                let compiled = compile_task(task).map_err(run_dsl_command_error)?;
+                let compiled = resolve_run_source_format(&root, compiled)
+                    .map_err(run_control_command_error)?;
+                let source = PathBuf::from(&compiled.ast.source.path);
+                validate_run_source_output_separation(&source, &output)
+                    .map_err(run_control_command_error)?;
+                validate_run_output_target(&root, &output).map_err(run_control_command_error)?;
+                let source_content_id =
+                    fingerprint_run_source(&root, &source).map_err(run_control_command_error)?;
+                let output_text = output.to_str().ok_or_else(|| {
+                    (
+                        "RUN_PATH_INVALID",
+                        2,
+                        anyhow::anyhow!("--output must be valid UTF-8"),
+                    )
+                })?;
+                let authorization = classify_run_output(&root, &output, &compiled.intent_id)
+                    .map_err(run_control_command_error)?;
+                let consumption = run_consumption_binding(consume, consumer, run_id, run_dir)?;
+                if let Some(consumption) = consumption.as_ref() {
+                    validate_run_source_consumption_separation(&source, consumption)
+                        .map_err(run_control_command_error)?;
+                }
+                validate_run_consumption_target(&root, consumption.as_ref())
+                    .map_err(run_control_command_error)?;
+                let provider_identity: TransformProviderIdentity = serde_json::from_str(
+                    provider_identity.as_deref().ok_or_else(|| {
+                        (
+                            "PROVIDER_UNAVAILABLE",
+                            2,
+                            anyhow::anyhow!(
+                                "the run provider identity is not bound; install with pip install 'datajig[duckdb]' and invoke the datajig Python entrypoint"
+                            ),
+                        )
+                    })?,
+                )
+                .map_err(|error| {
+                    (
+                        "PROVIDER_INCOMPATIBLE",
+                        2,
+                        anyhow::anyhow!("invalid run provider identity: {error}"),
+                    )
+                })?;
+                let binding = RunPlanBinding {
+                    source_content_id,
+                    engine_version: run_engine_version(),
+                    provider_identity,
+                    output: output_text.into(),
+                    consumption,
+                };
+                let nonce = run_attempt_nonce();
+                let plan = create_run_plan(&compiled, &binding, &nonce, authorization.level, yes)
+                    .map_err(run_control_command_error)?;
+                let layout = persist_run_plan(&root, &plan).map_err(run_control_command_error)?;
+                let strict = strict
+                    || std::env::var("DATAJIG_STRICT")
+                        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+                emit_new_run_plan(plan, layout.plan, strict);
+            }
         }
         Command::Init {
             dataset,
@@ -1232,10 +1379,23 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             run_id,
             output,
             plan,
+            published_manifest,
+            published_run_dir,
         } => {
-            let artifact =
+            let artifact = if let Some(published_manifest) = published_manifest.as_deref() {
+                plan_training_consumption_for_publication(
+                    &manifest,
+                    &split,
+                    &consumer,
+                    &run_id,
+                    &output,
+                    &plan,
+                    Some((published_manifest, published_run_dir.as_deref())),
+                )
+            } else {
                 plan_training_consumption(&manifest, &split, &consumer, &run_id, &output, &plan)
-                    .map_err(training_consumption_command_error)?;
+            }
+            .map_err(training_consumption_command_error)?;
             println!(
                 "{}",
                 json!({
@@ -1973,6 +2133,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             threads,
             change,
             changeset,
+            format,
         } => {
             let automatic_binding = change.is_none() && changeset.is_none();
             let workspace_status = if automatic_binding {
@@ -2018,17 +2179,23 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             } else {
                 json!([{"command": "check", "args": ["--state", state]}])
             };
-            println!(
-                "{}",
-                json!({
-                    "agent_api_version": AGENT_API_VERSION,
-                    "backend": "rust",
-                    "kind": "workspace_status",
-                    "decision": artifact.decision,
-                    "next_actions": next_actions,
-                    "artifact": artifact
-                })
-            );
+            let mut response = json!({
+                "agent_api_version": AGENT_API_VERSION,
+                "backend": "rust",
+                "kind": "workspace_status",
+                "decision": artifact.decision,
+                "next_actions": next_actions,
+                "artifact": artifact
+            });
+            if format == "text" {
+                let head = response["artifact"]["head_revision_id"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                let clean = response["artifact"]["clean"].as_bool().unwrap_or(false);
+                response["artifact"]["text"] =
+                    json!(format!("DataJig workspace\nHEAD: {head}\nclean: {clean}\n"));
+            }
+            println!("{response}");
         }
         Command::Inventory {
             root,
@@ -2312,7 +2479,279 @@ fn validate_command_arguments(command: &Command) -> Result<(), CommandError> {
         TrainingExportConfig::new(seed.clone(), splits, *max_shard_records, *max_shard_bytes)
             .map_err(training_export_command_error)?;
     }
+    if let Command::Run {
+        strict,
+        resume,
+        output,
+        consume,
+        consumer,
+        run_id,
+        run_dir,
+        provider_identity,
+        ..
+    } = command
+    {
+        if resume.is_some()
+            && (*strict
+                || *consume
+                || consumer.is_some()
+                || run_id.is_some()
+                || run_dir.is_some()
+                || provider_identity.is_some()
+                || output != Path::new("bundle"))
+        {
+            return Err((
+                "INVALID_ARGUMENT",
+                2,
+                anyhow::anyhow!(
+                    "--resume accepts only --accept-plan and optional --yes; all execution inputs come from the immutable plan"
+                ),
+            ));
+        }
+        if *consume && (consumer.is_none() || run_id.is_none() || run_dir.is_none()) {
+            return Err((
+                "INVALID_ARGUMENT",
+                2,
+                anyhow::anyhow!(
+                    "--consume requires --consumer, --run-id, and --run-dir; example: --consume --consumer pytorch --run-id training-001 --run-dir runs/training-001"
+                ),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn run_consumption_binding(
+    consume: bool,
+    consumer: Option<String>,
+    run_id: Option<String>,
+    run_dir: Option<PathBuf>,
+) -> Result<Option<RunConsumptionBinding>, CommandError> {
+    if !consume {
+        return Ok(None);
+    }
+    let missing = [
+        ("--consumer", consumer.is_none()),
+        ("--run-id", run_id.is_none()),
+        ("--run-dir", run_dir.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(name, absent)| absent.then_some(name))
+    .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err((
+            "INVALID_ARGUMENT",
+            2,
+            anyhow::anyhow!(
+                "--consume requires {}; example: --consume --consumer pytorch --run-id training-001 --run-dir runs/training-001",
+                missing.join(", ")
+            ),
+        ));
+    }
+    let run_dir = run_dir
+        .expect("checked above")
+        .to_str()
+        .ok_or_else(|| {
+            (
+                "INVALID_ARGUMENT",
+                2,
+                anyhow::anyhow!("--run-dir must be valid UTF-8"),
+            )
+        })?
+        .to_owned();
+    Ok(Some(RunConsumptionBinding {
+        consumer: consumer.expect("checked above"),
+        run_id: run_id.expect("checked above"),
+        run_dir,
+    }))
+}
+
+fn run_attempt_nonce() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{}-{nanos}", std::process::id())
+}
+
+fn run_engine_version() -> String {
+    format!("datajig-run-engine-v1/{}", env!("CARGO_PKG_VERSION"))
+}
+
+fn run_response_artifact(plan: &RunPlanArtifact, plan_path: Option<&Path>) -> Value {
+    let mut artifact = serde_json::to_value(plan).expect("run plan should serialize");
+    let object = artifact
+        .as_object_mut()
+        .expect("run plan should serialize as an object");
+    object.insert("execution_status".into(), json!("planned"));
+    if let Some(path) = plan_path {
+        object.insert("plan_path".into(), json!(path));
+    }
+    artifact
+}
+
+fn emit_new_run_plan(plan: RunPlanArtifact, plan_path: PathBuf, strict: bool) {
+    let requires_authorization =
+        plan.authorization.status == AuthorizationStatus::ConfirmationRequired;
+    let requires_acceptance = strict || requires_authorization;
+    let mut args = vec![
+        "--resume".to_owned(),
+        plan.attempt_id.clone(),
+        "--accept-plan".to_owned(),
+        plan.plan_id.clone(),
+    ];
+    if requires_authorization {
+        args.push("--yes".into());
+    }
+    println!(
+        "{}",
+        json!({
+            "agent_api_version": AGENT_API_VERSION,
+            "backend": "rust",
+            "kind": if requires_acceptance { "run_plan_ready" } else { "run_plan_accepted" },
+            "decision": if requires_acceptance { "confirmation_required" } else { "ready" },
+            "next_actions": if requires_acceptance {
+                json!([{"command": "run", "args": args}])
+            } else {
+                json!([])
+            },
+            "artifact": run_response_artifact(&plan, Some(&plan_path))
+        })
+    );
+}
+
+fn emit_resumed_run_plan(
+    plan: RunPlanArtifact,
+    yes: bool,
+    live_level: datajig_core::AuthorizationLevel,
+) -> Result<(), CommandError> {
+    let authorization_level = if plan.authorization.level
+        == datajig_core::AuthorizationLevel::Dangerous
+        || live_level == datajig_core::AuthorizationLevel::Dangerous
+    {
+        datajig_core::AuthorizationLevel::Dangerous
+    } else {
+        datajig_core::AuthorizationLevel::Safe
+    };
+    let authorization = datajig_core::authorize_run(authorization_level, yes);
+    if authorization.status == AuthorizationStatus::Rejected {
+        return Err((
+            "RUN_AUTHORIZATION_REJECTED",
+            2,
+            anyhow::anyhow!("fatal run authorization cannot be overridden by --yes"),
+        ));
+    }
+    let confirmation_required = authorization.status == AuthorizationStatus::ConfirmationRequired;
+    let next_actions = if confirmation_required {
+        json!([{
+            "command": "run",
+            "args": ["--resume", plan.attempt_id, "--accept-plan", plan.plan_id, "--yes"]
+        }])
+    } else {
+        json!([])
+    };
+    println!(
+        "{}",
+        json!({
+            "agent_api_version": AGENT_API_VERSION,
+            "backend": "rust",
+            "kind": if confirmation_required { "run_plan_ready" } else { "run_plan_accepted" },
+            "decision": if confirmation_required { "confirmation_required" } else { "ready" },
+            "next_actions": next_actions,
+            "artifact": run_response_artifact(&plan, None)
+        })
+    );
+    Ok(())
+}
+
+fn reverify_resumed_run(
+    root: &Path,
+    plan: &RunPlanArtifact,
+) -> Result<datajig_core::AuthorizationLevel, CommandError> {
+    let current_engine = run_engine_version();
+    if plan.binding.engine_version != current_engine {
+        return Err((
+            "RUN_ENGINE_DRIFT",
+            2,
+            anyhow::anyhow!(
+                "run engine changed after planning: expected {}, observed {}; create and accept a new run plan",
+                plan.binding.engine_version,
+                current_engine
+            ),
+        ));
+    }
+    let compiled = datajig_core::canonicalize_run_task(plan.canonical_ast.clone())
+        .map_err(run_dsl_command_error)?;
+    resolve_run_source_format(root, compiled).map_err(run_control_command_error)?;
+    let source = PathBuf::from(&plan.canonical_ast.source.path);
+    validate_run_source_output_separation(&source, Path::new(&plan.binding.output))
+        .map_err(run_control_command_error)?;
+    validate_run_output_target(root, Path::new(&plan.binding.output))
+        .map_err(run_control_command_error)?;
+    if let Some(consumption) = plan.binding.consumption.as_ref() {
+        validate_run_source_consumption_separation(&source, consumption)
+            .map_err(run_control_command_error)?;
+    }
+    validate_run_consumption_target(root, plan.binding.consumption.as_ref())
+        .map_err(run_control_command_error)?;
+    let current_source =
+        fingerprint_run_source(root, &source).map_err(run_control_command_error)?;
+    if current_source != plan.binding.source_content_id {
+        return Err((
+            "SOURCE_CHANGED",
+            2,
+            anyhow::anyhow!(
+                "run source changed after planning: expected {}, observed {}; create a new run plan",
+                plan.binding.source_content_id,
+                current_source
+            ),
+        ));
+    }
+    let authorization = classify_run_output(root, Path::new(&plan.binding.output), &plan.intent_id)
+        .map_err(run_control_command_error)?;
+    if authorization.level == datajig_core::AuthorizationLevel::Fatal {
+        return Err((
+            "RUN_AUTHORIZATION_REJECTED",
+            2,
+            anyhow::anyhow!(
+                "run output eligibility changed after planning; the target is no longer safe"
+            ),
+        ));
+    }
+    Ok(authorization.level)
+}
+
+fn run_dsl_command_error(error: RunDslError) -> CommandError {
+    let code = match error.code.as_str() {
+        "UNSUPPORTED_TASK" => "UNSUPPORTED_TASK",
+        "DSL_INTERNAL_ERROR" => "DSL_INTERNAL_ERROR",
+        _ => "INVALID_ARGUMENT",
+    };
+    (code, 2, error.into())
+}
+
+fn run_control_command_error(error: RunControlError) -> CommandError {
+    let code = match error.code.as_str() {
+        "RUN_AUTHORIZATION_REJECTED" => "RUN_AUTHORIZATION_REJECTED",
+        "RUN_ATTEMPT_NOT_FOUND" => "RUN_ATTEMPT_NOT_FOUND",
+        "RUN_PLAN_MISMATCH" => "RUN_PLAN_MISMATCH",
+        "RUN_PLAN_CORRUPT" => "RUN_PLAN_CORRUPT",
+        "RUN_PLAN_CONFLICT" => "RUN_PLAN_CONFLICT",
+        "RUN_STATE_CONFLICT" => "RUN_STATE_CONFLICT",
+        "RUN_STATE_LIMIT_EXCEEDED" => "RUN_STATE_LIMIT_EXCEEDED",
+        "SOURCE_LOAD_FAILED" => "SOURCE_LOAD_FAILED",
+        "MIXED_FORMAT" => "MIXED_FORMAT",
+        "SOURCE_FORMAT_MISMATCH" => "SOURCE_FORMAT_MISMATCH",
+        "SOURCE_FORMAT_UNSUPPORTED" => "SOURCE_FORMAT_UNSUPPORTED",
+        "RUN_PATH_INVALID" => "RUN_PATH_INVALID",
+        "RUN_PATH_OVERLAP" => "RUN_PATH_OVERLAP",
+        "RUN_CONSUMPTION_CONFLICT" => "RUN_CONSUMPTION_CONFLICT",
+        "RUN_PLAN_READ_FAILED" => "RUN_PLAN_READ_FAILED",
+        "RUN_PLAN_WRITE_FAILED" => "RUN_PLAN_WRITE_FAILED",
+        _ => "INVALID_ARGUMENT",
+    };
+    (code, 2, error.into())
 }
 
 fn parse_transform_inputs(values: &[String]) -> Result<Vec<TransformInputSpec>, CommandError> {
@@ -2931,7 +3370,21 @@ fn exit_with_error(
         )
     });
     let mut next_actions = Vec::<Value>::new();
-    if let Some(provider) =
+    if let Some(run_error) = source.and_then(|error| error.downcast_ref::<RunDslError>()) {
+        error["message"] = json!(run_error.message);
+        error["remediation"] = json!({"summary": run_error.remediation});
+        error["details"] = json!({
+            "location": run_error.location,
+            "position": run_error.position,
+            "suggestions": run_error.suggestions
+        });
+        next_actions.push(json!({"command": "run", "args": ["--help"]}));
+    } else if let Some(run_error) = source.and_then(|error| error.downcast_ref::<RunControlError>())
+    {
+        error["message"] = json!(run_error.message);
+        error["remediation"] = json!({"summary": run_error.remediation});
+        next_actions.push(json!({"command": "run", "args": ["--help"]}));
+    } else if let Some(provider) =
         source.and_then(|error| error.downcast_ref::<TransformProviderExecutionError>())
     {
         error["message"] = json!(provider.message());

@@ -1,4 +1,5 @@
 use crate::hf_import::{HfImportedFile, load_hf_import_receipt};
+use crate::identity::blake3_content_id;
 use crate::prepare::{PrepareInvalidDataError, hash_file};
 use crate::tabular_source::{
     TabularConsumer, TabularRow, stream_csv, stream_jsonl, stream_parquet,
@@ -337,18 +338,33 @@ impl ResolvedPrepareSource {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn stream<C: TabularConsumer>(&self, consumer: &mut C) -> Result<()> {
+        self.stream_with_generated_id(consumer, None)
+    }
+
+    pub(crate) fn stream_with_generated_id<C: TabularConsumer>(
+        &self,
+        consumer: &mut C,
+        generated_source_id: Option<&str>,
+    ) -> Result<()> {
         let mut schema = ShardSchemaConsumer::new(consumer);
         for file in &self.files {
+            let mut source_identity = SourceIdentityConsumer::new(
+                &mut schema,
+                generated_source_id,
+                &file.content_id,
+                &file.relative_path,
+            );
             match self.format {
                 PrepareSourceFormat::Csv { delimiter } => {
-                    stream_csv(&file.absolute_path, delimiter, &mut schema)?;
+                    stream_csv(&file.absolute_path, delimiter, &mut source_identity)?;
                 }
                 PrepareSourceFormat::Parquet => {
-                    stream_parquet(&file.absolute_path, &mut schema)?;
+                    stream_parquet(&file.absolute_path, &mut source_identity)?;
                 }
                 PrepareSourceFormat::Jsonl => {
-                    stream_jsonl(&file.absolute_path, &mut schema)?;
+                    stream_jsonl(&file.absolute_path, &mut source_identity)?;
                 }
             }
         }
@@ -361,6 +377,71 @@ impl ResolvedPrepareSource {
             .iter()
             .map(|file| file.relative_path.as_str())
             .collect()
+    }
+}
+
+struct SourceIdentityConsumer<'a, C> {
+    consumer: &'a mut C,
+    field: Option<&'a str>,
+    file_content_id: &'a str,
+    relative_path: &'a str,
+    ordinal: u64,
+}
+
+impl<'a, C> SourceIdentityConsumer<'a, C> {
+    fn new(
+        consumer: &'a mut C,
+        field: Option<&'a str>,
+        file_content_id: &'a str,
+        relative_path: &'a str,
+    ) -> Self {
+        Self {
+            consumer,
+            field,
+            file_content_id,
+            relative_path,
+            ordinal: 0,
+        }
+    }
+}
+
+impl<C: TabularConsumer> TabularConsumer for SourceIdentityConsumer<'_, C> {
+    fn headers(&mut self, headers: &[String]) -> Result<()> {
+        let Some(field) = self.field else {
+            return self.consumer.headers(headers);
+        };
+        if headers.iter().any(|header| header == field) {
+            return Err(PrepareInvalidDataError::new(format!(
+                "source already contains generated source id field {field:?}"
+            ))
+            .into());
+        }
+        let mut generated_headers = headers.to_vec();
+        generated_headers.push(field.to_owned());
+        self.consumer.headers(&generated_headers)
+    }
+
+    fn row(&mut self, mut row: TabularRow) -> Result<()> {
+        if let Some(field) = self.field {
+            let payload =
+                serde_json::to_vec(&(self.file_content_id, self.relative_path, self.ordinal))?;
+            let identity =
+                blake3_content_id("srcrow", b"datajig-generated-source-row-v1\0", &payload);
+            if row
+                .insert(field.to_owned(), serde_json::Value::String(identity))
+                .is_some()
+            {
+                return Err(PrepareInvalidDataError::new(format!(
+                    "source row already contains generated source id field {field:?}"
+                ))
+                .into());
+            }
+            self.ordinal = self
+                .ordinal
+                .checked_add(1)
+                .ok_or_else(|| PrepareInvalidDataError::new("source row ordinal overflow"))?;
+        }
+        self.consumer.row(row)
     }
 }
 

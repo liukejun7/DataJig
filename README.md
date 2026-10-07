@@ -12,6 +12,7 @@
   <a href="https://pypi.org/project/datajig/"><img src="https://img.shields.io/pypi/v/datajig?label=PyPI" alt="PyPI"></a>
   <a href="https://pypi.org/project/datajig/"><img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-D22128" alt="Apache-2.0 license"></a>
+  <a href="https://github.com/liukejun7/DataJig/actions/workflows/ci.yml"><img src="https://github.com/liukejun7/DataJig/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 <p align="center">
@@ -38,7 +39,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.8.4` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.9.0` · agent-first task compiler · recoverable runs · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -78,9 +79,38 @@ aggregations:
 python -m pip install 'datajig[duckdb]'
 ```
 
+## One task to a verified training bundle
+
+DataJig 0.9 adds a deterministic task compiler and a recoverable `run` control
+plane. A short task becomes a canonical plan, an isolated attempt, an immutable
+dataset revision, a training bundle, and a verifiable `runrcpt_...` evidence
+record without creating a second execution path:
+
+```bash
+datajig run 'from data/rows.csv source-id-field auto export id-field _datajig_source_id' \
+  --output training-data
+
+# Review first, execute the exact accepted plan later.
+datajig run 'from data/rows.csv source-id-field auto export id-field _datajig_source_id' \
+  --strict --output training-data
+datajig run --resume attempt_... --accept-plan plan_...
+
+datajig status --state .datajig/runs/intent_.../workspace/state --format text
+datajig lineage runrcpt_... --state .datajig
+```
+
+The supported DSL covers bounded source, preparation, transform, and export
+operations. Localized task templates compile through the same canonical DSL.
+Tasks outside the deterministic boundary return `UNSUPPORTED_TASK` with
+location, suggestions, remediation, and a next action instead of guessing.
+`source-id-field auto` is explicit opt-in and generates stable source IDs before
+preparation. Crashed attempts resume forward from the pipeline journal; a run
+receipt appears only after commit and is append-only, identity-bound, and
+independently verifiable.
+
 ## One YAML to a training delivery
 
-DataJig 0.8 turns the atomic workflow into one agent-safe transaction. A
+The lower-level pipeline API turns the atomic workflow into one agent-safe transaction. A
 pipeline binds local CSV, Parquet, or JSONL bytes, authorized SQL, the target
 workspace, export settings, and per-split training consumers into one `pipe_...`
 identity:
@@ -131,10 +161,11 @@ but still produces the requested bundle, consumer plans, and `piped_...`
 receipt. Use `--config pipeline.yaml --auto-accept` only when intentionally
 skipping separate plan review.
 
-`lineage` currently resolves committed pipeline receipts and their pipeline,
-revision, bundle, or consumption-plan identities. For an atomic manual workflow,
-inspect its verified transform receipt and workspace `log` separately; a bare
-manual `rev_...` is intentionally not treated as a pipeline lineage root.
+`lineage` resolves committed pipeline artifacts and 0.9 run receipts. Run
+lineage connects source, intent, plan, attempt, revision, bundle, consumption,
+and final receipt identities. For an atomic manual workflow, inspect its
+verified transform receipt and workspace `log` separately; a bare manual
+`rev_...` is intentionally not treated as a pipeline or run lineage root.
 
 ## One evidence chain, end to end
 

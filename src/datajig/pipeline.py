@@ -38,6 +38,7 @@ _TOP_KEYS = frozenset(
         "validate",
         "export",
         "consumption_plan",
+        "run",
     }
 )
 
@@ -99,6 +100,15 @@ def _required_text(data: Mapping[str, object], key: str, context: str) -> str:
         _fail(f"{context}.{key} must be a non-empty string")
     if any(ord(character) < 32 and character not in "\n\r\t" for character in value):
         _fail(f"{context}.{key} contains control characters")
+    return value
+
+
+def _required_identity(
+    data: Mapping[str, object], key: str, prefix: str, context: str
+) -> str:
+    value = _required_text(data, key, context)
+    if re.fullmatch(rf"{re.escape(prefix)}_[0-9a-f]{{64}}", value) is None:
+        _fail(f"{context}.{key} must be an exact {prefix}_ content identity")
     return value
 
 
@@ -323,13 +333,16 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
     }
 
     raw_consumption = data.get("consumption_plan")
-    if not isinstance(raw_consumption, list) or not raw_consumption:
-        _fail("consumption_plan must contain at least one consumer binding")
+    if not isinstance(raw_consumption, list):
+        _fail("consumption_plan must be an array; use [] when no consumer is requested")
     split_names = {item.split("=", 1)[0] for item in normalized_splits}
     consumption: list[dict[str, str]] = []
+    explicit_run_dirs: list[tuple[str, tuple[str, ...]]] = []
     for index, raw_consumer in enumerate(raw_consumption):
         consumer = _object(
-            raw_consumer, frozenset({"consumer", "split", "run_id"}), f"consumption_plan[{index}]"
+            raw_consumer,
+            frozenset({"consumer", "split", "run_id", "run_dir"}),
+            f"consumption_plan[{index}]",
         )
         consumer_name = _required_text(consumer, "consumer", f"consumption_plan[{index}]")
         split = _required_text(consumer, "split", f"consumption_plan[{index}]")
@@ -340,8 +353,58 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
             _fail(f"consumption split {split!r} is not exported")
         if _RUN_ID.fullmatch(run_id) is None:
             _fail("run_id must be 1..128 characters from [A-Za-z0-9._:-]")
-        consumption.append({"consumer": consumer_name, "split": split, "run_id": run_id})
-    consumption.sort(key=lambda item: (item["split"], item["consumer"], item["run_id"]))
+        normalized_consumer = {
+            "consumer": consumer_name,
+            "split": split,
+            "run_id": run_id,
+        }
+        if "run_dir" in consumer:
+            run_dir = _logical_path(
+                _required_text(consumer, "run_dir", f"consumption_plan[{index}]"),
+                f"consumption_plan[{index}].run_dir",
+            )
+            _validate_path_components(
+                config_path.parent,
+                run_dir,
+                f"consumption_plan[{index}].run_dir",
+                planning=True,
+            )
+            planned_run_dir = config_path.parent.joinpath(*PurePosixPath(run_dir).parts)
+            if planned_run_dir.exists() or planned_run_dir.is_symlink():
+                _fail(
+                    f"consumption_plan[{index}].run_dir already exists; "
+                    "choose a new run directory"
+                )
+            run_dir_parts = PurePosixPath(run_dir).parts
+            for previous, previous_parts in explicit_run_dirs:
+                common = min(len(run_dir_parts), len(previous_parts))
+                if run_dir_parts[:common] == previous_parts[:common]:
+                    _fail(
+                        f"consumption_plan[{index}].run_dir {run_dir!r} duplicates or overlaps "
+                        f"explicit run_dir {previous!r}"
+                    )
+            explicit_run_dirs.append((run_dir, run_dir_parts))
+            normalized_consumer["run_dir"] = run_dir
+        consumption.append(normalized_consumer)
+    consumption.sort(
+        key=lambda item: (
+            item["split"],
+            item["consumer"],
+            item["run_id"],
+            item.get("run_dir", ""),
+        )
+    )
+
+    run_binding: dict[str, str] | None = None
+    if data.get("run") is not None:
+        run = _object(
+            data.get("run"), frozenset({"intent_id", "plan_id", "attempt_id"}), "run"
+        )
+        run_binding = {
+            "intent_id": _required_identity(run, "intent_id", "intent", "run"),
+            "plan_id": _required_identity(run, "plan_id", "plan", "run"),
+            "attempt_id": _required_identity(run, "attempt_id", "attempt", "run"),
+        }
 
     base_revision = _base_revision(config_path.parent, target_normalized)
     try:
@@ -370,6 +433,8 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         "bundle_spec_id": bundle_spec_id,
         "consumption_plan": consumption,
     }
+    if run_binding is not None:
+        authorization["run"] = run_binding
     pipeline_id = _identity("pipe", b"datajig-pipeline-plan-v1", authorization)
     artifact: dict[str, object] = {
         "namespace": "datajig",
@@ -388,6 +453,8 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         "base_revision": base_revision,
         "bindings": {"config_base": os.path.relpath(config_path.parent, plan_path.parent)},
     }
+    if run_binding is not None:
+        artifact["run"] = run_binding
     planned_paths = _execution_paths(artifact, plan_path)
     if planned_paths["delivery"].exists() or planned_paths["delivery"].is_symlink():
         if target_normalized["mode"] != "update":
@@ -647,6 +714,7 @@ def read_pipeline_artifact(path: Path, verify: bool = False) -> dict[str, object
             "provider_identity",
             "base_revision",
             "bindings",
+            "run",
         }
         unknown = sorted(set(payload) - allowed)
         if unknown:
@@ -691,6 +759,8 @@ def calculate_pipeline_id(plan: Mapping[str, object]) -> str:
         "bundle_spec_id": plan.get("bundle_spec_id"),
         "consumption_plan": plan.get("consumption_plan"),
     }
+    if plan.get("run") is not None:
+        authorization["run"] = plan.get("run")
     return _identity("pipe", b"datajig-pipeline-plan-v1", authorization)
 
 
@@ -942,6 +1012,8 @@ def apply_pipeline(
                 "DELIVERY_CONFLICT",
                 "DataJig refuses to replace an existing delivery not owned by this pipeline",
             )
+    if existing is None:
+        _verify_consumption_targets_are_new(plan, paths["config_base"])
 
     control_root = _control_root(plan, paths["state"], pipeline_id)
     control_root.mkdir(parents=True, exist_ok=True)
@@ -1221,12 +1293,36 @@ def _verify_live_inputs(plan: Mapping[str, object], config_base: Path) -> None:
             )
 
 
+def _verify_consumption_targets_are_new(
+    plan: Mapping[str, object], config_base: Path
+) -> None:
+    raw_consumption = plan.get("consumption_plan")
+    if not isinstance(raw_consumption, list):
+        raise PipelineError("INVALID_PIPELINE_ARTIFACT", "Pipeline consumption plans are invalid")
+    for index, raw in enumerate(raw_consumption):
+        if not isinstance(raw, dict):
+            raise PipelineError(
+                "INVALID_PIPELINE_ARTIFACT", "Pipeline consumption plan is invalid"
+            )
+        requested_run_dir = raw.get("run_dir")
+        if not isinstance(requested_run_dir, str):
+            continue
+        output = _resolve_logical(config_base, requested_run_dir)
+        if output.exists() or output.is_symlink():
+            raise PipelineError(
+                "PIPELINE_PATH_UNSAFE",
+                f"consumption_plan[{index}].run_dir already exists; choose a new run directory",
+            )
+
+
 def _execute_transform(
     plan: Mapping[str, object],
     paths: Mapping[str, Path],
     attempt: Path,
     artifacts: dict[str, object],
 ) -> None:
+    if "transform_receipt" not in artifacts:
+        _verify_live_pipeline_provider(plan)
     staging = attempt / "staging"
     staging.mkdir(parents=True, exist_ok=True)
     mode = _mapping_text(_plan_mapping(plan, "target"), "mode", "target")
@@ -1284,6 +1380,28 @@ def _execute_transform(
             "transformed_content_id": applied["output_content_id"],
         }
     )
+
+
+def _verify_live_pipeline_provider(plan: Mapping[str, object]) -> None:
+    expected = _plan_mapping(plan, "provider_identity")
+    try:
+        actual = _probe()
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise PipelineError(
+            "PROVIDER_UNAVAILABLE",
+            "DuckDB pipeline support is not installed",
+            remediation="pip install 'datajig[duckdb]'",
+        ) from exc
+    except ProviderError as exc:
+        raise PipelineError(exc.code, exc.message, remediation=exc.remediation) from exc
+    if dict(actual) != dict(expected):
+        raise PipelineError(
+            "PIPELINE_PROVIDER_DRIFT",
+            "The transform provider changed after this pipeline plan was accepted",
+            expected_provider_id=expected.get("provider_id"),
+            actual_provider_id=actual.get("provider_id"),
+            remediation="create and accept a new pipeline plan with the active provider",
+        )
 
 
 def _commit_workspace_head(
@@ -1543,7 +1661,9 @@ def _prepare_delivery(
     for split in splits:
         arguments.extend(("--split", str(split)))
     exported = _run_native_artifact(arguments)
-    consumption_results = _create_consumption_plans(plan, delivery_stage)
+    consumption_results = _create_consumption_plans(
+        plan, delivery_stage, paths["config_base"], paths["delivery"]
+    )
     artifacts.update(
         {
             "delivery_stage": str(delivery_stage),
@@ -1721,6 +1841,8 @@ def _build_delivery_receipt(
         "delivery": str(paths["delivery"].resolve()),
         "no_op": bool(artifacts.get("no_op", False)),
     }
+    if plan.get("run") is not None:
+        receipt_basis["run"] = plan.get("run")
     if isinstance(artifacts.get("delivery_backup"), str):
         receipt_basis["delivery_backup"] = artifacts["delivery_backup"]
     receipt_id = _identity("piped", b"datajig-pipeline-receipt-v1", receipt_basis)
@@ -1728,7 +1850,10 @@ def _build_delivery_receipt(
 
 
 def _create_consumption_plans(
-    plan: Mapping[str, object], delivery: Path
+    plan: Mapping[str, object],
+    delivery: Path,
+    config_base: Path,
+    published_delivery: Path,
 ) -> list[dict[str, object]]:
     manifest = delivery / "bundle" / "datajig.bundle.json"
     results: list[dict[str, object]] = []
@@ -1736,9 +1861,14 @@ def _create_consumption_plans(
     assert isinstance(raw_consumption, list)
     for index, raw in enumerate(raw_consumption):
         assert isinstance(raw, dict)
-        output = delivery / "runs" / f"{index:03d}"
+        requested_run_dir = raw.get("run_dir")
+        fallback_run_dir = not isinstance(requested_run_dir, str)
+        output = (
+            _resolve_logical(config_base, requested_run_dir)
+            if isinstance(requested_run_dir, str)
+            else delivery / "runs" / f"{index:03d}"
+        )
         plan_output = delivery / "consumption" / f"{index:03d}.json"
-        output.parent.mkdir(parents=True, exist_ok=True)
         plan_output.parent.mkdir(parents=True, exist_ok=True)
         if plan_output.exists():
             try:
@@ -1754,22 +1884,30 @@ def _create_consumption_plans(
                 ["consume-info", str(plan_output), "--verify", "--accept-plan", plan_id]
             )
         else:
-            consumed = _run_native_artifact(
-                [
-                    "consume-plan",
-                    str(manifest),
-                    "--split",
-                    _mapping_text(raw, "split", "consumption plan"),
-                    "--consumer",
-                    _mapping_text(raw, "consumer", "consumption plan"),
-                    "--run-id",
-                    _mapping_text(raw, "run_id", "consumption plan"),
-                    "--output",
-                    str(output),
-                    "--plan",
-                    str(plan_output),
-                ]
-            )
+            arguments = [
+                "consume-plan",
+                str(manifest),
+                "--split",
+                _mapping_text(raw, "split", "consumption plan"),
+                "--consumer",
+                _mapping_text(raw, "consumer", "consumption plan"),
+                "--run-id",
+                _mapping_text(raw, "run_id", "consumption plan"),
+                "--output",
+                str(output),
+                "--plan",
+                str(plan_output),
+                "--published-manifest",
+                str(published_delivery / "bundle" / "datajig.bundle.json"),
+            ]
+            if fallback_run_dir:
+                arguments.extend(
+                    [
+                        "--published-run-dir",
+                        str(published_delivery / "runs" / f"{index:03d}"),
+                    ]
+                )
+            consumed = _run_native_artifact(arguments)
         results.append(
             {
                 "consumer": raw["consumer"],

@@ -103,7 +103,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         command(
             "artifact-schema",
             "Return a machine-readable JSON Schema and canonical example for a DataJig input artifact.",
-            "datajig artifact-schema [jsonl-field-patch|jsonl-quality-policy|pipeline-config|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]",
+            "datajig artifact-schema [jsonl-field-patch|jsonl-quality-policy|pipeline-config|prepare-recipe|repository-integration|run-receipt|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]",
             read_only(vec![], all_platforms()),
             vec![input(
                 "artifact",
@@ -1969,6 +1969,109 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
             ],
         ),
         command(
+            "run",
+            "Compile a DSL or deterministic phrase into an immutable, content-bound run plan with exact two-phase acceptance.",
+            "datajig run <TASK> [--strict] [--yes] [--output <RELATIVE_DIR>] [--consume --consumer <TYPE> --run-id <ID> --run-dir <DIR>] | datajig run --resume <ATTEMPT_ID> --accept-plan <PLAN_ID> [--yes]",
+            writes(
+                vec![
+                    "read_run_source",
+                    "write_run_workspace",
+                    "write_immutable_run_plan",
+                ],
+                unix_platforms(),
+            ),
+            vec![
+                input(
+                    "task",
+                    "dsl_or_deterministic_phrase",
+                    false,
+                    false,
+                    None,
+                    "DSL v1 task or supported deterministic phrase; required unless resuming.",
+                ),
+                input(
+                    "strict",
+                    "boolean",
+                    false,
+                    false,
+                    Some("false"),
+                    "Persist the immutable plan and stop for exact acceptance.",
+                ),
+                input(
+                    "resume",
+                    "content_id:attempt",
+                    false,
+                    false,
+                    None,
+                    "Exact persisted attempt identity; requires accept_plan.",
+                ),
+                input(
+                    "accept_plan",
+                    "content_id:plan",
+                    false,
+                    false,
+                    None,
+                    "Exact immutable plan identity accepted for resume.",
+                ),
+                input(
+                    "yes",
+                    "boolean",
+                    false,
+                    false,
+                    Some("false"),
+                    "Authorize dangerous operations for this invocation only; cannot override fatal checks and does not enter identity.",
+                ),
+                input(
+                    "output",
+                    "relative_path",
+                    false,
+                    false,
+                    Some("bundle"),
+                    "Relative public delivery directory bound into plan identity.",
+                ),
+                input(
+                    "consume",
+                    "boolean",
+                    false,
+                    false,
+                    Some("false"),
+                    "Bind an optional training consumption plan.",
+                ),
+                input(
+                    "consumer",
+                    "enum:python|pytorch|huggingface",
+                    false,
+                    false,
+                    None,
+                    "Consumption adapter; required with consume.",
+                ),
+                input(
+                    "run_id",
+                    "string",
+                    false,
+                    false,
+                    None,
+                    "Public external training run identity; required with consume.",
+                ),
+                input(
+                    "run_dir",
+                    "path",
+                    false,
+                    false,
+                    None,
+                    "Consumer run-state directory; required with consume.",
+                ),
+            ],
+            output("run_plan", "stdout", true),
+            vec![
+                exit(0, "plan persisted, accepted, or awaiting exact acceptance"),
+                exit(
+                    2,
+                    "invalid task, unsafe path, authorization, drift, or plan verification failure",
+                ),
+            ],
+        ),
+        command(
             "tutorial",
             "Create and run a complete verified keyed-JSONL-to-training example.",
             "datajig tutorial <OUTPUT>",
@@ -2061,7 +2164,7 @@ pub fn render_agent_skill() -> String {
         "## Operating rules\n\n\
 - Run `datajig capabilities` before relying on an optional feature.\n\
 - Run `datajig describe [command]` for the versioned input, output, effect, platform, and exit-code contract.\n\
-- Run `datajig artifact-schema [jsonl-field-patch|jsonl-quality-policy|pipeline-config|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]` instead of guessing an input artifact shape.\n\
+- Run `datajig artifact-schema [jsonl-field-patch|jsonl-quality-policy|pipeline-config|prepare-recipe|repository-integration|run-receipt|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]` instead of guessing an input artifact shape.\n\
 - Use `repository-install` to publish one version-matched Skill, CI workflow, hook, and content-addressed lock; use `repository-check` before agent work and in CI to reject drift or dirty bound workspaces.\n\
 - Start every local table with `datajig inspect`: JSONL returns workspace readiness; CSV and flat Parquet return a privacy-safe profile and inline preparation recipe template.\n\
 - For CSV, flat Parquet, or JSONL data preparation, pass one file, a recursive local directory, or a verified `datajig.hf-import.json`; use recipe `include`/`ignore` globs for local or imported shards, compose ordered transformations, inspect the bounded `prepare-plan`, then pass the exact returned `prep_...` identity to `prepare-apply`.\n\
@@ -2216,6 +2319,7 @@ fn command_prerequisites(name: &str) -> &'static [&'static str] {
         "record-diff" => &["dataset:two-keyed-jsonl-files"],
         "repository-check" => &["repository:installed-datajig-contract"],
         "repository-install" => &["repository:git-worktree"],
+        "run" => &["dataset:local", "output:relative-delivery"],
         "review" => &["artifact:baseline-and-candidate-inventories"],
         "review-plan" => &["workspace:initialized", "artifact:fresh-review-report"],
         "seal" => &[

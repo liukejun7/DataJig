@@ -4,8 +4,14 @@ import fcntl
 import json
 import os
 from pathlib import Path
+from unittest import mock
 
-from datajig.pipeline import _exchange_directories, _rename_directory_noreplace
+from datajig.pipeline import (
+    PipelineError,
+    _exchange_directories,
+    _rename_directory_noreplace,
+    apply_pipeline,
+)
 from tests.cli_harness import DataJigCliTestCase
 
 
@@ -114,6 +120,44 @@ consumption_plan:
             receipt["pipeline_receipt_id"], repeated["artifact"]["pipeline_receipt_id"]
         )
 
+    def test_default_consumption_run_is_bound_to_published_delivery(self) -> None:
+        config, _ = self._project()
+        plan, planned = self._plan(config)
+
+        self.run_cli("pipeline", "apply", plan, "--accept-plan", planned["pipeline_id"])
+
+        delivery = config.parent / "deliveries" / "user-agg-train"
+        consumption = json.loads(
+            (delivery / "consumption" / "000.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(str(delivery / "runs" / "000"), consumption["run_dir"])
+        self.assertNotIn(".datajig-delivery-", consumption["run_dir"])
+
+    def test_apply_rechecks_explicit_consumption_run_before_mutating_state(self) -> None:
+        config, _ = self._project()
+        config.write_text(
+            config.read_text(encoding="utf-8").replace(
+                "    run_id: run-2026-10-06\n",
+                "    run_id: run-2026-10-06\n    run_dir: runs/training\n",
+            ),
+            encoding="utf-8",
+        )
+        plan, planned = self._plan(config)
+        (config.parent / "runs" / "training").mkdir(parents=True)
+
+        result = self.assert_cli_error(
+            "PIPELINE_PATH_UNSAFE",
+            "pipeline",
+            "apply",
+            plan,
+            "--accept-plan",
+            planned["pipeline_id"],
+        )
+
+        self.assertIn("already exists", result.payload["error"]["message"])
+        self.assertFalse((config.parent / "prepared" / "training.jsonl").exists())
+        self.assertFalse((config.parent / ".datajig-pipeline").exists())
+
     def test_pipeline_binds_nonempty_transform_parameters(self) -> None:
         config, _ = self._project()
         document = config.read_text(encoding="utf-8").replace(
@@ -159,6 +203,27 @@ consumption_plan:
         self.assertEqual("events", drift.payload["error"]["input_alias"])
         self.assertFalse((config.parent / "deliveries").exists())
         self.assertFalse((config.parent / "prepared" / "training.jsonl").exists())
+
+    def test_apply_rejects_live_provider_drift_before_transform(self) -> None:
+        config, _ = self._project()
+        plan, planned = self._plan(config)
+        drifted = dict(planned["provider_identity"])
+        drifted["provider_id"] = "provider_" + "0" * 64
+
+        with (
+            mock.patch("datajig.pipeline._probe", return_value=drifted),
+            self.assertRaises(PipelineError) as raised,
+        ):
+            apply_pipeline(plan, str(planned["pipeline_id"]))
+
+        self.assertEqual("PIPELINE_PROVIDER_DRIFT", raised.exception.code)
+        self.assertEqual(
+            planned["provider_identity"]["provider_id"],
+            raised.exception.details["expected_provider_id"],
+        )
+        self.assertEqual(drifted["provider_id"], raised.exception.details["actual_provider_id"])
+        self.assertFalse((config.parent / "prepared" / "training.jsonl").exists())
+        self.assertFalse((config.parent / "deliveries" / "user-agg-train").exists())
 
     def test_resume_finishes_delivery_after_head_commit_failpoint(self) -> None:
         config, _ = self._project()

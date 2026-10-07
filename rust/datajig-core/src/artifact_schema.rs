@@ -9,12 +9,13 @@ use serde_json::{Value, json};
 pub const ARTIFACT_SCHEMA_VERSION: u8 = 1;
 type ArtifactSchemaFactory = fn() -> Value;
 
-const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 10] = [
+const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 11] = [
     ("jsonl-field-patch", jsonl_field_patch_artifact),
     ("jsonl-quality-policy", jsonl_quality_policy_artifact),
     ("pipeline-config", pipeline_config_artifact),
     ("prepare-recipe", prepare_recipe_artifact),
     ("repository-integration", repository_integration_artifact),
+    ("run-receipt", run_receipt_artifact),
     ("subset-view", subset_view_artifact),
     (
         "training-consumption-plan",
@@ -362,6 +363,76 @@ fn repository_integration_artifact() -> Value {
     })
 }
 
+fn run_receipt_artifact() -> Value {
+    json!({
+        "name": "run-receipt",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "media_type": "application/json",
+        "schema": run_receipt_schema(),
+        "example": {
+            "namespace": "datajig",
+            "kind": "run_receipt",
+            "run_receipt_schema_version": 1,
+            "status": "committed",
+            "intent_id": format!("intent_{}", "0".repeat(64)),
+            "plan_id": format!("plan_{}", "1".repeat(64)),
+            "attempt_id": format!("attempt_{}", "2".repeat(64)),
+            "source_content_id": format!("source_{}", "3".repeat(64)),
+            "pipeline_id": format!("pipe_{}", "4".repeat(64)),
+            "pipeline_receipt_id": format!("piped_{}", "5".repeat(64)),
+            "revision_id": format!("rev_{}", "6".repeat(64)),
+            "bundle_id": format!("bundle_{}", "7".repeat(64)),
+            "consumption_plan_ids": [format!("consume_{}", "8".repeat(64))],
+            "output": "delivery",
+            "run_receipt_id": format!("runrcpt_{}", "9".repeat(64))
+        }
+    })
+}
+
+fn run_receipt_schema() -> Value {
+    strict_object(
+        &[
+            "namespace",
+            "kind",
+            "run_receipt_schema_version",
+            "status",
+            "intent_id",
+            "plan_id",
+            "attempt_id",
+            "source_content_id",
+            "pipeline_id",
+            "pipeline_receipt_id",
+            "revision_id",
+            "bundle_id",
+            "consumption_plan_ids",
+            "output",
+            "run_receipt_id",
+        ],
+        json!({
+            "namespace": {"const": "datajig"},
+            "kind": {"const": "run_receipt"},
+            "run_receipt_schema_version": {"const": 1},
+            "status": {"const": "committed"},
+            "intent_id": content_id_schema("intent"),
+            "plan_id": content_id_schema("plan"),
+            "attempt_id": content_id_schema("attempt"),
+            "source_content_id": content_id_schema("source"),
+            "pipeline_id": content_id_schema("pipe"),
+            "pipeline_receipt_id": content_id_schema("piped"),
+            "revision_id": content_id_schema("rev"),
+            "bundle_id": content_id_schema("bundle"),
+            "consumption_plan_ids": {
+                "type": "array",
+                "maxItems": 64,
+                "uniqueItems": true,
+                "items": content_id_schema("consume")
+            },
+            "output": nonempty_string(),
+            "run_receipt_id": content_id_schema("runrcpt")
+        }),
+    )
+}
+
 pub fn artifact_schema_names() -> Vec<&'static str> {
     ARTIFACT_SCHEMA_REGISTRY
         .iter()
@@ -561,7 +632,7 @@ fn pipeline_config_artifact() -> Value {
             "validate": {"quality_policy": {"inline": {}}},
             "export": {"split": ["train=7", "val=2", "test=1"]},
             "consumption_plan": [
-                {"consumer": "pytorch", "split": "train", "run_id": "run-001"}
+                {"consumer": "pytorch", "split": "train", "run_id": "run-001", "run_dir": "runs/run-001"}
             ]
         }
     })
@@ -632,7 +703,16 @@ fn pipeline_config_schema() -> Value {
         json!({
             "consumer":{"enum":["python","pytorch","huggingface"]},
             "split":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"},
-            "run_id":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}
+            "run_id":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"},
+            "run_dir":logical_path()
+        }),
+    );
+    let run = strict_object(
+        &["intent_id", "plan_id", "attempt_id"],
+        json!({
+            "intent_id":{"type":"string","pattern":"^intent_[0-9a-f]{64}$"},
+            "plan_id":{"type":"string","pattern":"^plan_[0-9a-f]{64}$"},
+            "attempt_id":{"type":"string","pattern":"^attempt_[0-9a-f]{64}$"}
         }),
     );
     strict_object(
@@ -655,7 +735,8 @@ fn pipeline_config_schema() -> Value {
             "transform":transform,
             "validate":validate,
             "export":export,
-            "consumption_plan":{"type":"array","minItems":1,"items":consumption}
+            "consumption_plan":{"type":"array","items":consumption},
+            "run":run
         }),
     )
 }
@@ -991,6 +1072,11 @@ fn prepare_recipe_schema() -> Value {
                 "properties": {"format": {"const": "jsonl"}}
             },
             "id_field": prepare_field_schema(),
+            "generated_source_id": {
+                "oneOf": [prepare_field_schema(), {"type": "null"}],
+                "default": null,
+                "description": "Optional deterministic source-row identity injected before preparation steps"
+            },
             "steps": {
                 "type": "array",
                 "maxItems": 64,

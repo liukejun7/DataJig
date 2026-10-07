@@ -238,14 +238,41 @@ pub fn plan_training_consumption(
     run_dir: &Path,
     plan_path: &Path,
 ) -> Result<TrainingConsumptionPlanArtifact> {
+    plan_training_consumption_for_publication(
+        manifest, split, consumer, run_id, run_dir, plan_path, None,
+    )
+}
+
+pub fn plan_training_consumption_for_publication(
+    manifest: &Path,
+    split: &str,
+    consumer: &str,
+    run_id: &str,
+    run_dir: &Path,
+    plan_path: &Path,
+    publication: Option<(&Path, Option<&Path>)>,
+) -> Result<TrainingConsumptionPlanArtifact> {
     validate_run_id(run_id)?;
     validate_consumer(consumer)?;
     let info =
         inspect_training_bundle_with_consumer(manifest, true, true, None, None, None, Some(split))?;
     let manifest_path = canonical_regular_file(manifest, "training bundle manifest")?;
+    let bound_manifest_path = match publication {
+        Some((path, _)) => {
+            validate_planned_absolute_path(path, "published training bundle manifest")?
+        }
+        None => manifest_path.clone(),
+    };
     let run_dir = resolve_new_path(run_dir, "training consumption run")?;
+    let bound_run_dir = match publication.and_then(|(_, run_dir)| run_dir) {
+        Some(path) => validate_planned_absolute_path(path, "published training consumption run")?,
+        None => run_dir.clone(),
+    };
     let plan_path = resolve_new_path(plan_path, "training consumption plan")?;
-    if run_dir == plan_path || run_dir == manifest_path || plan_path == manifest_path {
+    if bound_run_dir == plan_path
+        || bound_run_dir == bound_manifest_path
+        || plan_path == bound_manifest_path
+    {
         return Err(InvalidArgumentError::new(
             "training consumption manifest, run, and plan paths must be distinct",
         )
@@ -268,8 +295,8 @@ pub fn plan_training_consumption(
     let plan = TrainingConsumptionPlan::new(
         run_id.into(),
         consumer.into(),
-        manifest_path.to_string_lossy().into_owned(),
-        run_dir.to_string_lossy().into_owned(),
+        bound_manifest_path.to_string_lossy().into_owned(),
+        bound_run_dir.to_string_lossy().into_owned(),
         consumer_plan,
         split.into(),
     )?;
@@ -291,6 +318,23 @@ pub fn plan_training_consumption(
         plan: plan_path.to_string_lossy().into_owned(),
         run_dir: plan.run_dir,
     })
+}
+
+fn validate_planned_absolute_path(path: &Path, label: &str) -> Result<PathBuf> {
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(InvalidArgumentError::new(format!(
+            "{label} must be an absolute normalized path without '..'"
+        ))
+        .into());
+    }
+    Ok(path.to_path_buf())
 }
 
 pub fn inspect_training_consumption(

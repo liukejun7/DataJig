@@ -79,6 +79,11 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertEqual(0, init.returncode, init.stderr)
         self.assertIn("datajig artifact-schema jsonl-quality-policy", init.stdout)
 
+        status = self.run_help("status")
+        self.assertEqual(0, status.returncode, status.stderr)
+        self.assertIn("--format <FORMAT>", status.stdout)
+        self.assertIn("possible values: json, text", status.stdout)
+
     def test_top_level_help_lists_transform_workflow(self) -> None:
         completed = self.run_help("")
         self.assertEqual(0, completed.returncode, completed.stderr)
@@ -86,6 +91,7 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("transform-apply", completed.stdout)
         self.assertIn("transform-info", completed.stdout)
         self.assertIn("review-plan", completed.stdout)
+        self.assertIn("run", completed.stdout)
         self.assertIn("pipeline", completed.stdout)
         self.assertIn("lineage", completed.stdout)
         self.assertNotRegex(completed.stdout, r"(?m)^  plan\s")
@@ -163,6 +169,30 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertTrue(payload["delivery_update"]["filesystem_preflight"])
         self.assertEqual("none", payload["delivery_update"]["fallback"])
         self.assertTrue(payload["features"]["fixed_delivery_updates"])
+        self.assertTrue(payload["features"]["immutable_run_receipts"])
+        self.assertTrue(payload["features"]["run_status_index"])
+        self.assertEqual(["json", "text"], payload["status_formats"])
+
+    def test_run_receipt_contract_is_discoverable(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        environment["DATAJIG_NATIVE"] = str(self.native)
+        completed = subprocess.run(
+            ("python", "-m", "datajig.cli", "artifact-schema", "run-receipt"),
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        artifact = json.loads(completed.stdout)["artifact"]
+        self.assertEqual("run-receipt", artifact["name"])
+        self.assertEqual("run_receipt", artifact["example"]["kind"])
+        self.assertEqual(1, artifact["example"]["run_receipt_schema_version"])
+        self.assertIn("run_receipt_id", artifact["schema"]["required"])
 
     def test_top_level_version_matches_installed_package_metadata(self) -> None:
         environment = os.environ.copy()
