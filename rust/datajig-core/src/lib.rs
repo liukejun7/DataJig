@@ -25,6 +25,7 @@ mod report_query;
 mod repository_integration;
 mod review;
 mod revision;
+mod run_control;
 mod run_dsl;
 mod strict_json;
 mod tabular_inspect;
@@ -135,6 +136,11 @@ pub use review::{MAX_PHASH_THRESHOLD, MAX_REVIEW_MATCH_CANDIDATES, ReviewArtifac
 pub use revision::{
     DatasetRevision, MAX_REVISION_BYTES, RECORD_REVISION_SCHEMA_VERSION, REVISION_SCHEMA_VERSION,
     RevisionProvenance, TRANSFORM_LINEAGE_REVISION_SCHEMA_VERSION, TransformLineage,
+};
+pub use run_control::{
+    AuthorizationLevel, AuthorizationStatus, RUN_PLAN_SCHEMA_VERSION, RunAuthorizationDecision,
+    RunConsumptionBinding, RunControlError, RunIdentities, RunPlanBinding, authorize_run,
+    derive_run_identities,
 };
 pub use run_dsl::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
