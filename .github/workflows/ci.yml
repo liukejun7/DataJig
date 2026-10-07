@@ -6,6 +6,12 @@ name: CI
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      publish_m1_preview:
+        description: Attach the Linux test binary to the M1 preview release
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -134,3 +140,43 @@ jobs:
           python -m unittest -v
           tests.test_transform_cli.TransformCliWorkflowTests.test_inline_parameters_are_bound_without_being_treated_as_a_path
           tests.test_tutorial.TutorialTests.test_tutorial_runs_one_complete_verified_training_workflow
+
+  m1-preview:
+    name: Publish M1 preview
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_m1_preview
+    needs:
+      - repository-hygiene
+      - rust
+      - python
+      - cli-integration
+      - python-compatibility
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      PREVIEW_TAG: v0.9.0-m1-preview.1
+      PREVIEW_ARCHIVE: datajig-0.9-m1-preview-linux-x86_64.tar.gz
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: datajig-native-linux-x86_64
+          path: preview
+      - name: Package preview binary
+        run: |
+          chmod +x preview/datajig-core
+          tar -C preview -czf "$PREVIEW_ARCHIVE" datajig-core
+          sha256sum "$PREVIEW_ARCHIVE" > "$PREVIEW_ARCHIVE.sha256"
+      - name: Publish preview release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              "$PREVIEW_ARCHIVE" "$PREVIEW_ARCHIVE.sha256"
+          else
+            gh release create "$PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --prerelease \
+              --title "DataJig 0.9 M1 testing preview" \
+              --notes "Testing-only Linux x86_64 binary for the DataJig 0.9 M1 checkpoint. This is not a production release or a PyPI publication." \
+              "$PREVIEW_ARCHIVE" "$PREVIEW_ARCHIVE.sha256"
+          fi
