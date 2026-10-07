@@ -1,6 +1,7 @@
 use super::RunDslError;
 use crate::identity::blake3_content_id;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const RUN_DSL_SCHEMA_VERSION: u8 = 1;
 pub const RUN_INTENT_ID_DOMAIN: &[u8] = b"datajig-run-intent-v1\0";
@@ -86,7 +87,91 @@ pub struct RunPrepareAst {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub enum PrepareStepAst {}
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PrepareStepAst {
+    Select {
+        fields: Vec<String>,
+    },
+    Filter {
+        field: String,
+        predicate: FilterPredicateAst,
+        value: Value,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    Cast {
+        field: String,
+        #[serde(rename = "type")]
+        value_type: CastTypeAst,
+    },
+    Trim {
+        fields: Vec<String>,
+    },
+    Case {
+        fields: Vec<String>,
+        mode: CaseModeAst,
+    },
+    Replace {
+        field: String,
+        from: Value,
+        to: Value,
+    },
+    FillMissing {
+        field: String,
+        value: Value,
+    },
+    DropMissing {
+        fields: Vec<String>,
+        mode: MissingModeAst,
+    },
+    Dedupe {
+        by: Vec<String>,
+        keep: DedupeKeepAst,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterPredicateAst {
+    Eq,
+    Ne,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CastTypeAst {
+    String,
+    Integer,
+    Number,
+    Boolean,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseModeAst {
+    Lower,
+    Upper,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingModeAst {
+    Any,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DedupeKeepAst {
+    First,
+    Error,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

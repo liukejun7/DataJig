@@ -137,9 +137,10 @@ pub use revision::{
     RevisionProvenance, TRANSFORM_LINEAGE_REVISION_SCHEMA_VERSION, TransformLineage,
 };
 pub use run_dsl::{
-    CompiledRunTask, PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunDslError,
-    RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat,
-    SourceIdAst, SourceIdMode, TrainingSplitsAst, canonicalize_run_task, compile_dsl,
+    CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst, FilterPredicateAst, MissingModeAst,
+    PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunDslError, RunExportAst,
+    RunPrepareAst, RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat, SourceIdAst,
+    SourceIdMode, TrainingSplitsAst, canonicalize_run_task, compile_dsl,
 };
 #[cfg(unix)]
 use std::ffi::OsString;
