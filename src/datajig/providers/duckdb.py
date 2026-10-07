@@ -27,6 +27,7 @@ SOURCE_LOADER_POLICY_VERSION = 2
 SQL_POLICY_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 _ALIAS = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_SQL_STRING_LITERAL = re.compile(r"'(?:''|[^'])*'")
 _LIMIT_KEYS = frozenset(
     {
         "inputs",
@@ -428,7 +429,9 @@ def _stream_result(
     return {"schema": schema, "rows": rows, "bytes": written, "candidate_complete": True}
 
 
-def _query_execution_error(error: Exception) -> ProviderError:
+def _query_execution_error(
+    error: Exception, sql: str, parameters: Sequence[object]
+) -> ProviderError:
     diagnostic = str(error).split("\n\n", 1)[0]
     diagnostic = " ".join(
         line.strip()
@@ -438,6 +441,14 @@ def _query_execution_error(error: Exception) -> ProviderError:
     diagnostic = "".join(
         character if ord(character) >= 32 else " " for character in diagnostic
     ).strip()
+    sensitive_values = {
+        match.group(0)[1:-1].replace("''", "'")
+        for match in _SQL_STRING_LITERAL.finditer(sql)
+    }
+    sensitive_values.update(value for value in parameters if isinstance(value, str))
+    for value in sorted(sensitive_values, key=len, reverse=True):
+        if value:
+            diagnostic = diagnostic.replace(value, "<redacted-sql-literal>")
     if not diagnostic:
         diagnostic = type(error).__name__
     message = _bounded_utf8(f"DuckDB query failed: {diagnostic}", 1024)
@@ -544,7 +555,7 @@ def _handle_request(raw_request: object) -> dict[str, object]:
                 candidate.unlink(missing_ok=True)
                 if type(error).__module__.partition(".")[0].lstrip("_") != "duckdb":
                     raise
-                raise _query_execution_error(error) from error
+                raise _query_execution_error(error, sql, parameters) from error
         finally:
             connection.close()
         id_field = _text(request.get("id_field"), "ID field")

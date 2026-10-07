@@ -388,6 +388,43 @@ class DuckDbProviderTest(unittest.TestCase):
             self.assertLessEqual(len(response["error"]["message"].encode("utf-8")), 1024)
             self.assertFalse(candidate.exists())
 
+    def test_query_diagnostic_redacts_sql_string_literals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "events.csv"
+            source.write_text("id,price\na,10\n", encoding="utf-8")
+            temp = root / "temp"
+            temp.mkdir()
+            candidate = root / "candidate.jsonl"
+            identity = provider._probe()
+
+            response = provider._handle_request(
+                {
+                    "protocol": "datajig.transform-provider.v1",
+                    "protocol_version": 1,
+                    "correlation_id": "corr-secret-literal",
+                    "operation": "execute",
+                    "expected_provider": identity,
+                    "sources": [_source("events", source, "csv", 1)],
+                    "sql": (
+                        "SELECT id, CAST('SQL_SECRET_ABC' AS BIGINT) AS price "
+                        "FROM events ORDER BY id"
+                    ),
+                    "parameters": [],
+                    "id_field": "id",
+                    "candidate_path": str(candidate),
+                    "temp_directory": str(temp),
+                    "limits": _limits(),
+                    "ast_policy_digest": "policy_test",
+                }
+            )
+
+            self.assertEqual("QUERY_EXECUTION_FAILED", response["error"]["code"])
+            self.assertNotIn("SQL_SECRET_ABC", response["error"]["message"])
+            self.assertIn("<redacted-sql-literal>", response["error"]["message"])
+            self.assertIn("INT64", response["error"]["message"])
+            self.assertFalse(candidate.exists())
+
     def test_missing_duckdb_is_a_structured_provider_error(self) -> None:
         with mock.patch.object(
             provider, "_import_duckdb", side_effect=ModuleNotFoundError("No module named duckdb")

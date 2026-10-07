@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
+from collections.abc import Iterator
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
+from datajig import open_consumption
+from datajig.integrations.torch import iterable_dataset as torch_dataset
 from tests.cli_harness import DataJigCliTestCase
 
 
@@ -174,6 +182,35 @@ class EndToEndJourneyTests(DataJigCliTestCase):
             consume_plan,
         ).payload["artifact"]
         self.assertTrue(consumption["consumption_plan_id"].startswith("consume_"))
+        class FakeIterableDataset:
+            def __iter__(self) -> Iterator[dict[str, Any]]:
+                raise NotImplementedError
+
+        fake_torch = SimpleNamespace(
+            utils=SimpleNamespace(
+                data=SimpleNamespace(
+                    IterableDataset=FakeIterableDataset,
+                    get_worker_info=lambda: SimpleNamespace(id=0, num_workers=1),
+                )
+            )
+        )
+        with (
+            patch.dict(os.environ, {"DATAJIG_NATIVE": str(self.native)}),
+            patch.dict(sys.modules, {"torch": fake_torch}),
+        ):
+            run = open_consumption(
+                consume_plan, accept_plan=consumption["consumption_plan_id"]
+            )
+            consumed_records = list(torch_dataset(run))
+        self.assertEqual(consumption["records"], len(consumed_records))
+        self.assertIsNotNone(run.receipt)
+        assert run.receipt is not None
+        consumed = json.loads(run.receipt.read_text(encoding="utf-8"))
+        self.assertTrue(consumed["consumption_receipt_id"].startswith("consumed_"))
+        self.assertEqual(
+            "all_verified_split_records_crossed_adapter_boundary_at_least_once",
+            consumed["claim"],
+        )
 
         config = self.root / "pipeline.json"
         config.write_text(

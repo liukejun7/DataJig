@@ -12,8 +12,8 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   legal shape and relative-path rules.
 - A CI journey that generates three days of raw logs and executes directory
   preparation, feature aggregation, lineage-bound versioning, review/seal,
-  training export, PyTorch consumption planning, pipeline delivery, and lineage
-  verification.
+  training export, PyTorch adapter consumption with durable receipt evidence,
+  pipeline delivery, and lineage verification.
 
 ### Changed
 
@@ -27,9 +27,9 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - DuckDB conversion and query failures now preserve a bounded actionable
   diagnostic, including the offending value, column, and target type when
-  available, instead of appearing as an unexplained provider crash. SQL text
-  and unbounded engine output remain suppressed, and failed transforms publish
-  no plan or dataset.
+  available, instead of appearing as an unexplained provider crash. SQL text,
+  SQL string literals, bound string parameters, and unbounded engine output
+  remain suppressed, and failed transforms publish no plan or dataset.
 
 ## [0.8.2] - 2026-10-06
 

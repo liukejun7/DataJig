@@ -186,6 +186,10 @@ fn published_pipeline_config_exposes_the_complete_strict_shape() {
     );
     assert_eq!("data/events.csv", example["inputs"][0]["path"]);
     assert_eq!("deliveries/user-agg-train", example["delivery"]["output"]);
+    assert_eq!(
+        65_536,
+        schema["properties"]["transform"]["properties"]["sql"]["x-datajig-max-utf8-bytes"]
+    );
     assert!(
         schema["properties"]["delivery"]["properties"]["output"]["pattern"]
             .as_str()

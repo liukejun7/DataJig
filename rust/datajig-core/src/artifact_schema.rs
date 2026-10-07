@@ -461,7 +461,13 @@ fn pipeline_config_schema() -> Value {
     let transform = strict_object(
         &["sql", "id_field"],
         json!({
-            "sql":{"type":"string","minLength":1,"maxLength":65536},
+            "sql":{
+                "type":"string",
+                "minLength":1,
+                "maxLength":65536,
+                "x-datajig-max-utf8-bytes":65536,
+                "description":"Non-empty SQL limited to 65,536 UTF-8 bytes; the byte limit is authoritative"
+            },
             "id_field":nonempty_string(),
             "params":{"type":"array","maxItems":256,"items":{"type":["null","boolean","integer","string"]},"default":[]}
         }),
