@@ -141,7 +141,7 @@ pub use run_control::{
     AuthorizationLevel, AuthorizationStatus, RUN_PLAN_SCHEMA_VERSION, RunAuthorizationDecision,
     RunConsumptionBinding, RunControlError, RunIdentities, RunLayout, RunPlanArtifact,
     RunPlanBinding, authorize_run, classify_run_output, create_run_plan, derive_run_identities,
-    fingerprint_run_source, load_run_plan_for_resume, persist_run_plan,
+    fingerprint_run_source, load_run_plan_for_resume, persist_run_plan, resolve_run_source_format,
 };
 pub use run_dsl::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,

@@ -27,9 +27,9 @@ use datajig_core::{
     load_run_plan_for_resume, locate_changeset_finding, manifest_diff_page, materialize_revision,
     persist_run_plan, plan_changeset, plan_hf_import, plan_prepare, plan_training_consumption,
     plan_transform, plan_workspace, preview_jsonl_patch, resolve_change_selector,
-    resolve_optional_changeset_context, revision_log, run_tutorial, seal_changeset,
-    seal_changeset_detached, seal_workspace, stage_changeset, status_changeset, status_workspace,
-    undo_jsonl_patch, write_agent_skill,
+    resolve_optional_changeset_context, resolve_run_source_format, revision_log, run_tutorial,
+    seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset, status_changeset,
+    status_workspace, undo_jsonl_patch, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -1155,6 +1155,8 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             } else {
                 let task = task.as_deref().expect("clap requires a task or --resume");
                 let compiled = compile_task(task).map_err(run_dsl_command_error)?;
+                let compiled = resolve_run_source_format(&root, compiled)
+                    .map_err(run_control_command_error)?;
                 let source = PathBuf::from(&compiled.ast.source.path);
                 let source_content_id =
                     fingerprint_run_source(&root, &source).map_err(run_control_command_error)?;
@@ -2581,6 +2583,9 @@ fn emit_resumed_run_plan(plan: RunPlanArtifact, yes: bool) -> Result<(), Command
 }
 
 fn reverify_resumed_run(root: &Path, plan: &RunPlanArtifact) -> Result<(), CommandError> {
+    let compiled = datajig_core::canonicalize_run_task(plan.canonical_ast.clone())
+        .map_err(run_dsl_command_error)?;
+    resolve_run_source_format(root, compiled).map_err(run_control_command_error)?;
     let source = PathBuf::from(&plan.canonical_ast.source.path);
     let current_source =
         fingerprint_run_source(root, &source).map_err(run_control_command_error)?;
@@ -2628,6 +2633,9 @@ fn run_control_command_error(error: RunControlError) -> CommandError {
         "RUN_STATE_CONFLICT" => "RUN_STATE_CONFLICT",
         "RUN_STATE_LIMIT_EXCEEDED" => "RUN_STATE_LIMIT_EXCEEDED",
         "SOURCE_LOAD_FAILED" => "SOURCE_LOAD_FAILED",
+        "MIXED_FORMAT" => "MIXED_FORMAT",
+        "SOURCE_FORMAT_MISMATCH" => "SOURCE_FORMAT_MISMATCH",
+        "SOURCE_FORMAT_UNSUPPORTED" => "SOURCE_FORMAT_UNSUPPORTED",
         "RUN_PATH_INVALID" => "RUN_PATH_INVALID",
         "RUN_PLAN_READ_FAILED" => "RUN_PLAN_READ_FAILED",
         "RUN_PLAN_WRITE_FAILED" => "RUN_PLAN_WRITE_FAILED",

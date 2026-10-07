@@ -189,3 +189,44 @@ fn consume_options_bind_a_separate_consumption_identity() {
             .starts_with("consume_")
     );
 }
+
+#[test]
+fn homogeneous_directory_format_is_inferred_into_the_canonical_plan() {
+    let root = TempDir::new();
+    fs::create_dir(root.path().join("rows")).unwrap();
+    fs::write(root.path().join("rows/day-1.csv"), b"id,value\n1,a\n").unwrap();
+    fs::write(root.path().join("rows/day-2.csv"), b"id,value\n2,b\n").unwrap();
+
+    let response = stdout_json(&run(root.path(), &["run", "整理 rows", "--strict"]));
+
+    assert_eq!(
+        response["artifact"]["canonical_ast"]["source"]["format"],
+        "csv"
+    );
+}
+
+#[test]
+fn mixed_directory_formats_are_rejected_before_a_plan_is_persisted() {
+    let root = TempDir::new();
+    fs::create_dir(root.path().join("mixed")).unwrap();
+    fs::write(root.path().join("mixed/rows.csv"), b"id,value\n1,a\n").unwrap();
+    fs::write(
+        root.path().join("mixed/rows.jsonl"),
+        b"{\"id\":2,\"value\":\"b\"}\n",
+    )
+    .unwrap();
+
+    let output = run(root.path(), &["run", "整理 mixed", "--strict"]);
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "MIXED_FORMAT");
+    assert!(error["error"]["message"].as_str().unwrap().contains("csv"));
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("jsonl")
+    );
+    assert!(!root.path().join(".datajig").exists());
+}
