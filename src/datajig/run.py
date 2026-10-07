@@ -39,6 +39,8 @@ _RUN_RECEIPT_KEYS = frozenset(
         "run_receipt_id",
     }
 )
+_MAX_RUN_ARTIFACT_BYTES = 8 * 1024 * 1024
+_MAX_LEGACY_LINEAGE_ENTRIES = 4096
 
 
 def execute_accepted_run(
@@ -258,18 +260,124 @@ def _find_run_receipt(state: Path, receipt_id: str) -> Path:
     root = _find_datajig_root(state)
     if root is None:
         raise PipelineError("LINEAGE_NOT_FOUND", "Cannot locate the DataJig run index")
-    matches: list[Path] = []
-    for path in (root / "runs").glob("*/receipts/*.json"):
+    if re.fullmatch(r"runrcpt_[0-9a-f]{64}", receipt_id) is None:
+        raise PipelineError("LINEAGE_NOT_FOUND", "Run receipt identity is invalid")
+    lookup_path = root / "meta" / "run-receipts" / f"{receipt_id}.json"
+    if lookup_path.is_file():
+        lookup = _load_json_object(lookup_path, "RUN_INDEX_CORRUPT")
+        if (
+            lookup.get("namespace") != "datajig"
+            or lookup.get("kind") != "run_receipt_lookup"
+            or lookup.get("run_receipt_lookup_schema_version") != 1
+            or lookup.get("run_receipt_id") != receipt_id
+        ):
+            raise PipelineError("RUN_INDEX_CORRUPT", "Run receipt lookup is invalid")
+        relative = Path(_text(lookup, "path"))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise PipelineError("RUN_INDEX_CORRUPT", "Run receipt lookup path is invalid")
+        receipt_path = root / relative
         receipt = _verify_run_receipt(
-            _load_json_object(path, "RUN_RECEIPT_TAMPERED")
+            _load_json_object(receipt_path, "RUN_RECEIPT_TAMPERED")
         )
-        if receipt.get("run_receipt_id") == receipt_id:
-            matches.append(path)
-    if len(matches) != 1:
+        if receipt.get("run_receipt_id") != receipt_id:
+            raise PipelineError("RUN_INDEX_CORRUPT", "Run receipt lookup is stale")
+        return receipt_path
+
+    # Compatibility path for receipts created before identity lookups existed. The
+    # derived status index contains at most 64 entries, keeping lookup bounded.
+    index_path = root / "meta" / "run-index.json"
+    if index_path.is_file():
+        index = _load_json_object(index_path, "RUN_INDEX_CORRUPT")
+        entries = index.get("entries")
+        if isinstance(entries, list) and len(entries) <= 64:
+            matches = [
+                entry
+                for entry in entries
+                if isinstance(entry, dict) and entry.get("run_receipt_id") == receipt_id
+            ]
+            if len(matches) == 1:
+                relative = Path(_text(matches[0], "path"))
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise PipelineError("RUN_INDEX_CORRUPT", "Run index path is invalid")
+                receipt_path = root / relative
+                receipt = _verify_run_receipt(
+                    _load_json_object(receipt_path, "RUN_RECEIPT_TAMPERED")
+                )
+                if receipt.get("run_receipt_id") == receipt_id:
+                    _persist_run_receipt_lookup(root, receipt_path, receipt_id)
+                    return receipt_path
+    legacy_matches = _scan_legacy_run_receipts(root, receipt_id)
+    if len(legacy_matches) == 1:
+        _persist_run_receipt_lookup(root, legacy_matches[0], receipt_id)
+        return legacy_matches[0]
+    if len(legacy_matches) > 1:
         raise PipelineError(
-            "LINEAGE_NOT_FOUND", f"Found {len(matches)} matching run receipts"
+            "LINEAGE_NOT_FOUND", f"Found {len(legacy_matches)} matching run receipts"
         )
-    return matches[0]
+    raise PipelineError("LINEAGE_NOT_FOUND", "Found 0 matching run receipts")
+
+
+def _scan_legacy_run_receipts(root: Path, receipt_id: str) -> list[Path]:
+    matches: list[Path] = []
+    visited = 0
+    try:
+        intent_entries = os.scandir(root / "runs")
+    except OSError as exc:
+        raise PipelineError("LINEAGE_NOT_FOUND", "Cannot read legacy run receipts") from exc
+    with intent_entries:
+        for intent_entry in intent_entries:
+            visited += 1
+            if visited > _MAX_LEGACY_LINEAGE_ENTRIES:
+                raise PipelineError(
+                    "LINEAGE_INDEX_LIMIT",
+                    "Legacy run receipt lookup exceeded its bounded migration limit",
+                    limit=_MAX_LEGACY_LINEAGE_ENTRIES,
+                    unit="directory_entries",
+                )
+            if not intent_entry.is_dir(follow_symlinks=False):
+                continue
+            try:
+                receipt_entries = os.scandir(Path(intent_entry.path) / "receipts")
+            except OSError:
+                continue
+            with receipt_entries:
+                for receipt_entry in receipt_entries:
+                    visited += 1
+                    if visited > _MAX_LEGACY_LINEAGE_ENTRIES:
+                        raise PipelineError(
+                            "LINEAGE_INDEX_LIMIT",
+                            "Legacy run receipt lookup exceeded its bounded migration limit",
+                            limit=_MAX_LEGACY_LINEAGE_ENTRIES,
+                            unit="directory_entries",
+                        )
+                    if not receipt_entry.name.endswith(".json") or not receipt_entry.is_file(
+                        follow_symlinks=False
+                    ):
+                        continue
+                    path = Path(receipt_entry.path)
+                    try:
+                        receipt = _verify_run_receipt(
+                            _load_json_object(path, "RUN_RECEIPT_TAMPERED")
+                        )
+                    except PipelineError:
+                        continue
+                    if receipt.get("run_receipt_id") == receipt_id:
+                        matches.append(path)
+    return matches
+
+
+def _persist_run_receipt_lookup(root: Path, path: Path, receipt_id: str) -> None:
+    _write_or_verify_json(
+        root / "meta" / "run-receipts" / f"{receipt_id}.json",
+        {
+            "namespace": "datajig",
+            "kind": "run_receipt_lookup",
+            "run_receipt_lookup_schema_version": 1,
+            "run_receipt_id": receipt_id,
+            "path": path.relative_to(root).as_posix(),
+        },
+        "RUN_INDEX_WRITE_FAILED",
+    )
 
 
 def _persist_run_receipt(path: Path, receipt: Mapping[str, object]) -> None:
@@ -323,6 +431,8 @@ def _persist_run_receipt(path: Path, receipt: Mapping[str, object]) -> None:
             os.close(descriptor)
         with suppress(FileNotFoundError):
             temporary.unlink()
+    receipt_id = _text(receipt, "run_receipt_id")
+    _persist_run_receipt_lookup(path.parents[3], path, receipt_id)
     try:
         _refresh_run_index(path.parents[3])
     except OSError as exc:
@@ -747,10 +857,21 @@ def _write_or_verify_json(path: Path, value: Mapping[str, object], code: str) ->
 
 
 def _load_json_object(path: Path, code: str) -> dict[str, object]:
+    descriptor: int | None = None
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_RUN_ARTIFACT_BYTES:
+            raise PipelineError(code, f"Run artifact exceeds the safe size limit: {path}")
+        payload = os.read(descriptor, _MAX_RUN_ARTIFACT_BYTES + 1)
+        if len(payload) > _MAX_RUN_ARTIFACT_BYTES:
+            raise PipelineError(code, f"Run artifact exceeds the safe size limit: {path}")
+        value = json.loads(payload.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise PipelineError(code, f"Cannot read run artifact: {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     if not isinstance(value, dict):
         raise PipelineError(code, f"Run artifact is not an object: {path}")
     return value

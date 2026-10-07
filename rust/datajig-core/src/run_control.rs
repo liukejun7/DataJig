@@ -681,7 +681,9 @@ pub fn validate_run_source_output_separation(
 ) -> Result<(), RunControlError> {
     validate_relative_path(source, "source")?;
     validate_relative_path(output, "output")?;
-    if source.starts_with(output) || output.starts_with(source) {
+    let source = normalize_relative_path(source);
+    let output = normalize_relative_path(output);
+    if source.starts_with(&output) || output.starts_with(&source) {
         return Err(RunControlError::new(
             "RUN_PATH_OVERLAP",
             format!(
@@ -693,6 +695,13 @@ pub fn validate_run_source_output_separation(
         ));
     }
     Ok(())
+}
+
+fn normalize_relative_path(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .map(|component| component.as_os_str())
+        .collect()
 }
 
 fn is_committed_datajig_delivery(root: &Path, output: &Path, intent_id: &str) -> bool {

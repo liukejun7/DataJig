@@ -58,6 +58,14 @@ class RunSecurityRegressionTests(DataJigCliTestCase):
         ).payload["artifact"]
         old_receipt_path = self.root / completed["run_receipt_path"]
         old_receipt = json.loads(old_receipt_path.read_text(encoding="utf-8"))
+        lookup_path = (
+            self.root
+            / ".datajig"
+            / "meta"
+            / "run-receipts"
+            / f"{completed['run_receipt_id']}.json"
+        )
+        lookup_path.unlink()
         os.utime(old_receipt_path, ns=(1, 1))
         receipts = old_receipt_path.parent
         for index in range(64):
@@ -70,6 +78,33 @@ class RunSecurityRegressionTests(DataJigCliTestCase):
             path = receipts / f"synthetic-{index:02d}.json"
             path.write_text(json.dumps(synthetic), encoding="utf-8")
             os.utime(path, ns=(index + 2, index + 2))
+        state = (
+            self.root
+            / ".datajig"
+            / "runs"
+            / completed["intent_id"]
+            / "workspace"
+            / "state"
+        )
+        self.run_cli("status", "--state", state)
+
+        resolved = self.run_cli(
+            "lineage", completed["run_receipt_id"], "--state", state
+        ).payload["artifact"]
+
+        self.assertEqual(completed["run_receipt_id"], resolved["run_receipt_id"])
+
+    def test_lineage_id_lookup_ignores_an_oversized_unrelated_receipt(self) -> None:
+        source = self.root / "rows.csv"
+        source.write_text("id,value\na,1\n", encoding="utf-8")
+        completed = self.run_cli(
+            "run",
+            "from rows.csv source-id-field id export id-field id",
+            "--output",
+            "delivery",
+        ).payload["artifact"]
+        receipt_path = self.root / completed["run_receipt_path"]
+        (receipt_path.parent / "unrelated.json").write_bytes(b"{" + b"x" * (9 * 1024 * 1024))
         state = (
             self.root
             / ".datajig"

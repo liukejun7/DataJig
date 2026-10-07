@@ -270,23 +270,25 @@ fn direct_file_format_mismatch_is_rejected_before_plan_persistence() {
 
 #[test]
 fn delivery_nested_under_a_directory_source_is_rejected_before_plan_persistence() {
-    let root = TempDir::new();
-    fs::create_dir(root.path().join("data")).unwrap();
-    fs::write(root.path().join("data/rows.csv"), b"id,value\n1,a\n").unwrap();
+    for (source, delivery) in [
+        ("data", "data/delivery"),
+        ("./data", "data/delivery"),
+        ("data", "./data/delivery"),
+    ] {
+        let root = TempDir::new();
+        fs::create_dir(root.path().join("data")).unwrap();
+        fs::write(root.path().join("data/rows.csv"), b"id,value\n1,a\n").unwrap();
+        let task = format!("from {source} source-id-field id export id-field id");
 
-    let output = run(
-        root.path(),
-        &[
-            "run",
-            "from data source-id-field id export id-field id",
-            "--output",
-            "data/delivery",
-        ],
-    );
+        let output = run(root.path(), &["run", &task, "--output", delivery]);
 
-    assert!(!output.status.success());
-    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "RUN_PATH_OVERLAP");
-    assert!(!root.path().join(".datajig").exists());
-    assert!(!root.path().join("data/delivery").exists());
+        assert!(
+            !output.status.success(),
+            "source={source} output={delivery}"
+        );
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "RUN_PATH_OVERLAP");
+        assert!(!root.path().join(".datajig").exists());
+        assert!(!root.path().join("data/delivery").exists());
+    }
 }
