@@ -233,24 +233,51 @@ fn committed_datajig_delivery_requires_explicit_update_authorization() {
     let root = TempDir::new();
     let delivery = root.path().join("bundle");
     fs::create_dir(&delivery).unwrap();
-    let receipt = serde_json::to_vec(&json!({
+    let intent_id = format!("intent_{}", "d".repeat(64));
+    let pipeline_id = format!("pipe_{}", "a".repeat(64));
+    let mut receipt = json!({
         "namespace": "datajig",
         "pipeline_receipt_schema_version": 1,
-        "pipeline_id": format!("pipe_{}", "a".repeat(64)),
-        "pipeline_receipt_id": format!("piped_{}", "b".repeat(64)),
+        "pipeline_id": pipeline_id,
         "final_revision": format!("rev_{}", "c".repeat(64)),
-        "status": "committed"
-    }))
-    .unwrap();
+        "status": "committed",
+        "delivery": delivery.canonicalize().unwrap(),
+        "run": {
+            "intent_id": intent_id,
+            "plan_id": format!("plan_{}", "e".repeat(64)),
+            "attempt_id": format!("attempt_{}", "f".repeat(64))
+        }
+    });
+    let mut receipt_hasher = blake3::Hasher::new();
+    receipt_hasher.update(b"datajig-pipeline-receipt-v1\0");
+    receipt_hasher.update(&serde_json::to_vec(&receipt).unwrap());
+    let receipt_id = format!("piped_{}", receipt_hasher.finalize().to_hex());
+    receipt["pipeline_receipt_id"] = json!(receipt_id);
+    let receipt = serde_json::to_vec(&receipt).unwrap();
     fs::write(delivery.join(".datajig-commit.json"), &receipt).unwrap();
     fs::write(delivery.join("pipeline-receipt.json"), &receipt).unwrap();
+    let stored = root
+        .path()
+        .join(".datajig/runs")
+        .join(&intent_id)
+        .join("workspace/state/pipelines")
+        .join(&pipeline_id);
+    fs::create_dir_all(&stored).unwrap();
+    fs::write(stored.join("receipt.json"), &receipt).unwrap();
 
-    let decision = classify_run_output(root.path(), Path::new("bundle"), "intent_any").unwrap();
+    let decision = classify_run_output(root.path(), Path::new("bundle"), &intent_id).unwrap();
 
     assert_eq!(decision.level, AuthorizationLevel::Dangerous);
     assert_eq!(decision.status, AuthorizationStatus::ConfirmationRequired);
+    let unrelated = classify_run_output(
+        root.path(),
+        Path::new("bundle"),
+        &format!("intent_{}", "0".repeat(64)),
+    )
+    .unwrap();
+    assert_eq!(unrelated.level, AuthorizationLevel::Fatal);
     fs::write(delivery.join("pipeline-receipt.json"), b"{}").unwrap();
-    let tampered = classify_run_output(root.path(), Path::new("bundle"), "intent_any").unwrap();
+    let tampered = classify_run_output(root.path(), Path::new("bundle"), &intent_id).unwrap();
     assert_eq!(tampered.level, AuthorizationLevel::Fatal);
 }
 

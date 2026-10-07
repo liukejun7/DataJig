@@ -1150,8 +1150,8 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 let accepted_plan = accept_plan.as_deref().expect("clap requires --accept-plan");
                 let plan = load_run_plan_for_resume(&root, &attempt_id, accepted_plan)
                     .map_err(run_control_command_error)?;
-                reverify_resumed_run(&root, &plan)?;
-                emit_resumed_run_plan(plan, yes)?;
+                let live_authorization = reverify_resumed_run(&root, &plan)?;
+                emit_resumed_run_plan(plan, yes, live_authorization)?;
             } else {
                 let task = task.as_deref().expect("clap requires a task or --resume");
                 let compiled = compile_task(task).map_err(run_dsl_command_error)?;
@@ -2550,8 +2550,20 @@ fn emit_new_run_plan(plan: RunPlanArtifact, plan_path: PathBuf, strict: bool) {
     );
 }
 
-fn emit_resumed_run_plan(plan: RunPlanArtifact, yes: bool) -> Result<(), CommandError> {
-    let authorization = datajig_core::authorize_run(plan.authorization.level, yes);
+fn emit_resumed_run_plan(
+    plan: RunPlanArtifact,
+    yes: bool,
+    live_level: datajig_core::AuthorizationLevel,
+) -> Result<(), CommandError> {
+    let authorization_level = if plan.authorization.level
+        == datajig_core::AuthorizationLevel::Dangerous
+        || live_level == datajig_core::AuthorizationLevel::Dangerous
+    {
+        datajig_core::AuthorizationLevel::Dangerous
+    } else {
+        datajig_core::AuthorizationLevel::Safe
+    };
+    let authorization = datajig_core::authorize_run(authorization_level, yes);
     if authorization.status == AuthorizationStatus::Rejected {
         return Err((
             "RUN_AUTHORIZATION_REJECTED",
@@ -2582,7 +2594,10 @@ fn emit_resumed_run_plan(plan: RunPlanArtifact, yes: bool) -> Result<(), Command
     Ok(())
 }
 
-fn reverify_resumed_run(root: &Path, plan: &RunPlanArtifact) -> Result<(), CommandError> {
+fn reverify_resumed_run(
+    root: &Path,
+    plan: &RunPlanArtifact,
+) -> Result<datajig_core::AuthorizationLevel, CommandError> {
     let compiled = datajig_core::canonicalize_run_task(plan.canonical_ast.clone())
         .map_err(run_dsl_command_error)?;
     resolve_run_source_format(root, compiled).map_err(run_control_command_error)?;
@@ -2611,7 +2626,7 @@ fn reverify_resumed_run(root: &Path, plan: &RunPlanArtifact) -> Result<(), Comma
             ),
         ));
     }
-    Ok(())
+    Ok(authorization.level)
 }
 
 fn run_dsl_command_error(error: RunDslError) -> CommandError {

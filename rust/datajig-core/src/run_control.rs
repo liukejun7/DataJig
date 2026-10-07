@@ -637,7 +637,7 @@ fn source_format_name(format: &SourceFormat) -> &'static str {
 pub fn classify_run_output(
     root: &Path,
     relative: &Path,
-    _intent_id: &str,
+    intent_id: &str,
 ) -> Result<RunAuthorizationDecision, RunControlError> {
     if validate_relative_path(relative, "output").is_err() {
         return Ok(authorize_run(AuthorizationLevel::Fatal, false));
@@ -650,13 +650,13 @@ pub fn classify_run_output(
     if !output.exists() {
         return Ok(authorize_run(AuthorizationLevel::Safe, false));
     }
-    if is_committed_datajig_delivery(&output) {
+    if is_committed_datajig_delivery(&root, &output, intent_id) {
         return Ok(authorize_run(AuthorizationLevel::Dangerous, false));
     }
     Ok(authorize_run(AuthorizationLevel::Fatal, false))
 }
 
-fn is_committed_datajig_delivery(output: &Path) -> bool {
+fn is_committed_datajig_delivery(root: &Path, output: &Path, intent_id: &str) -> bool {
     let Ok(output_metadata) = fs::symlink_metadata(output) else {
         return false;
     };
@@ -702,6 +702,38 @@ fn is_committed_datajig_delivery(output: &Path) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|value| validate_prefixed_id(value, prefix, field).is_ok())
     };
+    let run = object.get("run").and_then(serde_json::Value::as_object);
+    let pipeline_id = object
+        .get("pipeline_id")
+        .and_then(serde_json::Value::as_str);
+    let mut identity_basis = std::collections::BTreeMap::new();
+    for (key, value) in object {
+        if key != "pipeline_receipt_id" {
+            identity_basis.insert(key.clone(), value.clone());
+        }
+    }
+    let identity_matches = serde_json::to_vec(&identity_basis)
+        .ok()
+        .map(|payload| blake3_content_id("piped", b"datajig-pipeline-receipt-v1\0", &payload))
+        .as_deref()
+        == object
+            .get("pipeline_receipt_id")
+            .and_then(serde_json::Value::as_str);
+    let stored_receipt_matches = pipeline_id.is_some_and(|pipeline_id| {
+        let stored = root
+            .join(".datajig/runs")
+            .join(intent_id)
+            .join("workspace/state/pipelines")
+            .join(pipeline_id)
+            .join("receipt.json");
+        read_direct(&stored).is_some_and(|stored_bytes| stored_bytes == receipt_bytes)
+    });
+    let delivery_matches = output
+        .canonicalize()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_owned))
+        .as_deref()
+        == object.get("delivery").and_then(serde_json::Value::as_str);
     object.get("namespace").and_then(serde_json::Value::as_str) == Some("datajig")
         && object
             .get("pipeline_receipt_schema_version")
@@ -711,6 +743,13 @@ fn is_committed_datajig_delivery(output: &Path) -> bool {
         && valid_id("pipeline_id", "pipe")
         && valid_id("pipeline_receipt_id", "piped")
         && valid_id("final_revision", "rev")
+        && run
+            .and_then(|value| value.get("intent_id"))
+            .and_then(serde_json::Value::as_str)
+            == Some(intent_id)
+        && identity_matches
+        && stored_receipt_matches
+        && delivery_matches
 }
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, RunControlError> {
