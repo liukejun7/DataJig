@@ -214,6 +214,117 @@ fn consume_options_bind_a_separate_consumption_identity() {
 }
 
 #[test]
+fn invalid_consumption_run_ids_are_rejected_before_plan_persistence() {
+    for run_id in ["training 001".to_owned(), "a".repeat(129)] {
+        let root = TempDir::new();
+        fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+        let output = run(
+            root.path(),
+            &[
+                "run",
+                "from rows.csv source-id-field id export id-field id",
+                "--strict",
+                "--consume",
+                "--consumer",
+                "pytorch",
+                "--run-id",
+                &run_id,
+                "--run-dir",
+                "runs/training-001",
+            ],
+        );
+
+        assert!(!output.status.success(), "run_id={run_id:?}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_ARGUMENT");
+        assert!(!root.path().join(".datajig").exists());
+    }
+}
+
+#[test]
+fn consumption_run_directory_must_not_overlap_delivery() {
+    for (delivery, run_dir) in [
+        ("delivery", "delivery/runs/training-001"),
+        ("Delivery", "delivery/runs/training-001"),
+        ("café", "cafe\u{301}/runs/training-001"),
+        ("σ", "ς/runs/training-001"),
+    ] {
+        let root = TempDir::new();
+        fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+        let output = run(
+            root.path(),
+            &[
+                "run",
+                "from rows.csv source-id-field id export id-field id",
+                "--output",
+                delivery,
+                "--consume",
+                "--consumer",
+                "pytorch",
+                "--run-id",
+                "training-001",
+                "--run-dir",
+                run_dir,
+            ],
+        );
+
+        assert!(
+            !output.status.success(),
+            "delivery={delivery} run_dir={run_dir}"
+        );
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "RUN_PATH_OVERLAP");
+        assert!(!root.path().join(".datajig").exists());
+        assert!(!root.path().join(delivery).exists());
+    }
+}
+
+#[test]
+fn canonically_equivalent_unicode_paths_cannot_bypass_source_delivery_separation() {
+    for (source, delivery) in [("café", "cafe\u{301}/delivery"), ("σ", "ς/delivery")] {
+        let root = TempDir::new();
+        fs::create_dir(root.path().join(source)).unwrap();
+        fs::write(
+            root.path().join(source).join("rows.csv"),
+            b"id,value\n1,a\n",
+        )
+        .unwrap();
+        let task = format!("from {source} source-id-field id export id-field id");
+        let output = run(root.path(), &["run", &task, "--output", delivery]);
+
+        assert!(
+            !output.status.success(),
+            "source={source} output={delivery}"
+        );
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "RUN_PATH_OVERLAP");
+        assert!(!root.path().join(".datajig").exists());
+    }
+}
+
+#[test]
+fn delivery_must_not_overlap_run_control_state() {
+    for delivery in [".datajig", ".datajig/runs", ".DATAJIG/delivery"] {
+        let root = TempDir::new();
+        fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+        let output = run(
+            root.path(),
+            &[
+                "run",
+                "from rows.csv source-id-field id export id-field id",
+                "--output",
+                delivery,
+            ],
+        );
+
+        assert!(!output.status.success(), "delivery={delivery}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], "RUN_PATH_OVERLAP");
+        assert!(!root.path().join(".datajig").exists());
+    }
+}
+
+#[test]
 fn homogeneous_directory_format_is_inferred_into_the_canonical_plan() {
     let root = TempDir::new();
     fs::create_dir(root.path().join("rows")).unwrap();
@@ -274,6 +385,7 @@ fn delivery_nested_under_a_directory_source_is_rejected_before_plan_persistence(
         ("data", "data/delivery"),
         ("./data", "data/delivery"),
         ("data", "./data/delivery"),
+        ("data", "DATA/delivery"),
     ] {
         let root = TempDir::new();
         fs::create_dir(root.path().join("data")).unwrap();

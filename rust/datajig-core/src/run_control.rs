@@ -10,6 +10,8 @@ use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use unicase::UniCase;
+use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 
 pub const RUN_PLAN_SCHEMA_VERSION: u8 = 1;
@@ -158,8 +160,12 @@ pub fn derive_run_identities(
         .validate()
         .map_err(|error| RunControlError::invalid("provider_identity", error.to_string()))?;
     validate_value("output", &binding.output)?;
+    validate_run_public_path(Path::new(&binding.output), "output")?;
     validate_attempt_nonce(attempt_nonce)?;
 
+    if let Some(consumption) = binding.consumption.as_ref() {
+        validate_run_consumption_paths(Path::new(&binding.output), consumption)?;
+    }
     let consumption_id = binding
         .consumption
         .as_ref()
@@ -680,10 +686,10 @@ pub fn validate_run_source_output_separation(
     output: &Path,
 ) -> Result<(), RunControlError> {
     validate_relative_path(source, "source")?;
-    validate_relative_path(output, "output")?;
-    let source = normalize_relative_path(source);
-    let output = normalize_relative_path(output);
-    if source.starts_with(&output) || output.starts_with(&source) {
+    validate_run_public_path(output, "output")?;
+    let source_key = relative_path_comparison_key(source, "source")?;
+    let output_key = relative_path_comparison_key(output, "output")?;
+    if source_key.starts_with(&output_key) || output_key.starts_with(&source_key) {
         return Err(RunControlError::new(
             "RUN_PATH_OVERLAP",
             format!(
@@ -697,10 +703,53 @@ pub fn validate_run_source_output_separation(
     Ok(())
 }
 
-fn normalize_relative_path(path: &Path) -> PathBuf {
+fn validate_run_public_path(path: &Path, field: &str) -> Result<(), RunControlError> {
+    validate_relative_path(path, field)?;
+    let normalized = relative_path_comparison_key(path, field)?;
+    let state = [".datajig".to_owned()];
+    if normalized.starts_with(&state) || state.starts_with(&normalized) {
+        return Err(RunControlError::new(
+            "RUN_PATH_OVERLAP",
+            format!(
+                "{field} {} overlaps DataJig run-control state",
+                path.display()
+            ),
+            format!("choose {field} outside .datajig"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_run_consumption_paths(
+    output: &Path,
+    consumption: &RunConsumptionBinding,
+) -> Result<(), RunControlError> {
+    let run_dir = Path::new(&consumption.run_dir);
+    validate_run_public_path(run_dir, "run_dir")?;
+    let output = relative_path_comparison_key(output, "output")?;
+    let run_dir = relative_path_comparison_key(run_dir, "run_dir")?;
+    if output.starts_with(&run_dir) || run_dir.starts_with(&output) {
+        return Err(RunControlError::new(
+            "RUN_PATH_OVERLAP",
+            "delivery output and consumption run_dir must not contain one another",
+            "choose a training run directory outside the delivery tree",
+        ));
+    }
+    Ok(())
+}
+
+fn relative_path_comparison_key(path: &Path, field: &str) -> Result<Vec<String>, RunControlError> {
     path.components()
         .filter(|component| !matches!(component, Component::CurDir))
-        .map(|component| component.as_os_str())
+        .map(|component| {
+            let value = component
+                .as_os_str()
+                .to_str()
+                .ok_or_else(|| RunControlError::invalid(field, "must be valid UTF-8"))?;
+            let normalized = value.nfc().collect::<String>();
+            let folded = UniCase::new(normalized).to_folded_case();
+            Ok(folded.nfc().collect::<String>())
+        })
         .collect()
 }
 
@@ -1078,6 +1127,17 @@ fn derive_consumption_id(consumption: &RunConsumptionBinding) -> Result<String, 
         ));
     }
     validate_value("run_id", &consumption.run_id)?;
+    if consumption.run_id.len() > 128
+        || !consumption
+            .run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return Err(RunControlError::invalid(
+            "run_id",
+            "must contain 1..=128 characters from [A-Za-z0-9._:-]",
+        ));
+    }
     validate_value("run_dir", &consumption.run_dir)?;
     let payload = serde_json::to_vec(&ConsumptionIdentity {
         schema_version: RUN_PLAN_SCHEMA_VERSION,

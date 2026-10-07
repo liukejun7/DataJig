@@ -26,6 +26,8 @@ sha2 = "0.10"
 sqlparser = { version = "=0.63.0", default-features = false, features = ["std", "visitor"] }
 ureq = { version = "=3.4.2", default-features = false, features = ["gzip", "json", "platform-verifier", "rustls"] }
 url = "=2.5.4"
+unicode-normalization = "0.1"
+unicase = "2.8"
 walkdir = "2.5"
 
 [target.'cfg(unix)'.dependencies]
