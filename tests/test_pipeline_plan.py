@@ -270,6 +270,30 @@ class PipelinePlanTests(DataJigCliTestCase):
                 self.assertIn("run_dir", result.payload["error"]["message"])
                 self.assertFalse((project / "plan.json").exists())
 
+    def test_consumption_run_directory_must_not_exist_during_planning(self) -> None:
+        project = self.root / "existing-consumption"
+        config = self._project(
+            project,
+            CONFIG.replace(
+                "    run_id: run-2026-10-06\n",
+                "    run_id: run-2026-10-06\n    run_dir: runs/training\n",
+            ),
+        )
+        (project / "runs" / "training").mkdir(parents=True)
+
+        result = self.assert_cli_error(
+            "INVALID_PIPELINE_CONFIG",
+            "pipeline",
+            "plan",
+            "--config",
+            config,
+            "--plan",
+            project / "plan.json",
+        )
+
+        self.assertIn("already exists", result.payload["error"]["message"])
+        self.assertFalse((project / "plan.json").exists())
+
     def test_target_and_delivery_paths_reject_symlinked_parents(self) -> None:
         project = self.root / "project"
         config = self._project(project)

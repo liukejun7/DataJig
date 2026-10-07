@@ -369,6 +369,12 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
                 f"consumption_plan[{index}].run_dir",
                 planning=True,
             )
+            planned_run_dir = config_path.parent.joinpath(*PurePosixPath(run_dir).parts)
+            if planned_run_dir.exists() or planned_run_dir.is_symlink():
+                _fail(
+                    f"consumption_plan[{index}].run_dir already exists; "
+                    "choose a new run directory"
+                )
             run_dir_parts = PurePosixPath(run_dir).parts
             for previous, previous_parts in explicit_run_dirs:
                 common = min(len(run_dir_parts), len(previous_parts))
@@ -1006,6 +1012,8 @@ def apply_pipeline(
                 "DELIVERY_CONFLICT",
                 "DataJig refuses to replace an existing delivery not owned by this pipeline",
             )
+    if existing is None:
+        _verify_consumption_targets_are_new(plan, paths["config_base"])
 
     control_root = _control_root(plan, paths["state"], pipeline_id)
     control_root.mkdir(parents=True, exist_ok=True)
@@ -1282,6 +1290,28 @@ def _verify_live_inputs(plan: Mapping[str, object], config_base: Path) -> None:
                 input_alias=alias,
                 expected_content_id=raw.get("content_id"),
                 actual_content_id=actual,
+            )
+
+
+def _verify_consumption_targets_are_new(
+    plan: Mapping[str, object], config_base: Path
+) -> None:
+    raw_consumption = plan.get("consumption_plan")
+    if not isinstance(raw_consumption, list):
+        raise PipelineError("INVALID_PIPELINE_ARTIFACT", "Pipeline consumption plans are invalid")
+    for index, raw in enumerate(raw_consumption):
+        if not isinstance(raw, dict):
+            raise PipelineError(
+                "INVALID_PIPELINE_ARTIFACT", "Pipeline consumption plan is invalid"
+            )
+        requested_run_dir = raw.get("run_dir")
+        if not isinstance(requested_run_dir, str):
+            continue
+        output = _resolve_logical(config_base, requested_run_dir)
+        if output.exists() or output.is_symlink():
+            raise PipelineError(
+                "PIPELINE_PATH_UNSAFE",
+                f"consumption_plan[{index}].run_dir already exists; choose a new run directory",
             )
 
 
@@ -1832,13 +1862,13 @@ def _create_consumption_plans(
     for index, raw in enumerate(raw_consumption):
         assert isinstance(raw, dict)
         requested_run_dir = raw.get("run_dir")
+        fallback_run_dir = not isinstance(requested_run_dir, str)
         output = (
             _resolve_logical(config_base, requested_run_dir)
             if isinstance(requested_run_dir, str)
             else delivery / "runs" / f"{index:03d}"
         )
         plan_output = delivery / "consumption" / f"{index:03d}.json"
-        output.parent.mkdir(parents=True, exist_ok=True)
         plan_output.parent.mkdir(parents=True, exist_ok=True)
         if plan_output.exists():
             try:
@@ -1854,24 +1884,30 @@ def _create_consumption_plans(
                 ["consume-info", str(plan_output), "--verify", "--accept-plan", plan_id]
             )
         else:
-            consumed = _run_native_artifact(
-                [
-                    "consume-plan",
-                    str(manifest),
-                    "--split",
-                    _mapping_text(raw, "split", "consumption plan"),
-                    "--consumer",
-                    _mapping_text(raw, "consumer", "consumption plan"),
-                    "--run-id",
-                    _mapping_text(raw, "run_id", "consumption plan"),
-                    "--output",
-                    str(output),
-                    "--plan",
-                    str(plan_output),
-                    "--published-manifest",
-                    str(published_delivery / "bundle" / "datajig.bundle.json"),
-                ]
-            )
+            arguments = [
+                "consume-plan",
+                str(manifest),
+                "--split",
+                _mapping_text(raw, "split", "consumption plan"),
+                "--consumer",
+                _mapping_text(raw, "consumer", "consumption plan"),
+                "--run-id",
+                _mapping_text(raw, "run_id", "consumption plan"),
+                "--output",
+                str(output),
+                "--plan",
+                str(plan_output),
+                "--published-manifest",
+                str(published_delivery / "bundle" / "datajig.bundle.json"),
+            ]
+            if fallback_run_dir:
+                arguments.extend(
+                    [
+                        "--published-run-dir",
+                        str(published_delivery / "runs" / f"{index:03d}"),
+                    ]
+                )
+            consumed = _run_native_artifact(arguments)
         results.append(
             {
                 "consumer": raw["consumer"],

@@ -242,6 +242,9 @@ enum Command {
         /// Final manifest path that an atomic publisher will expose with this plan.
         #[arg(long, hide = true)]
         published_manifest: Option<PathBuf>,
+        /// Final run directory that an atomic publisher will expose with this plan.
+        #[arg(long, hide = true, requires = "published_manifest")]
+        published_run_dir: Option<PathBuf>,
     },
     /// Verify one accepted training consumption plan and its live bundle.
     ConsumeInfo {
@@ -1377,8 +1380,9 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             output,
             plan,
             published_manifest,
+            published_run_dir,
         } => {
-            let artifact = if let Some(published_manifest) = published_manifest {
+            let artifact = if let Some(published_manifest) = published_manifest.as_deref() {
                 plan_training_consumption_for_publication(
                     &manifest,
                     &split,
@@ -1386,7 +1390,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                     &run_id,
                     &output,
                     &plan,
-                    Some(&published_manifest),
+                    Some((published_manifest, published_run_dir.as_deref())),
                 )
             } else {
                 plan_training_consumption(&manifest, &split, &consumer, &run_id, &output, &plan)

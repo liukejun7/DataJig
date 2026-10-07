@@ -596,6 +596,15 @@ impl Parser {
             let (field, position) =
                 self.take_value(location, "provide a field name after the comma")?;
             reject_reserved_field(&field, location, position)?;
+            if fields.contains(&field) {
+                return Err(RunDslError::new(
+                    "INVALID_DSL",
+                    location,
+                    position,
+                    format!("field list contains duplicate field `{field}`"),
+                    "list every field only once",
+                ));
+            }
             fields.push(field);
         }
         Ok(fields)

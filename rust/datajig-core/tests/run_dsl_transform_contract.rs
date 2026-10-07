@@ -39,6 +39,19 @@ fn auto_source_identity_is_implicitly_retained_by_select_once() {
 }
 
 #[test]
+fn prepare_field_lists_reject_duplicates_during_compilation() {
+    for task in [
+        "from rows.csv source-id-field id prepare select id,id export id-field id",
+        "from rows.csv source-id-field id prepare dedupe by id,id export id-field id",
+    ] {
+        let error = compile_dsl(task).unwrap_err();
+        assert_eq!(error.code, "INVALID_DSL", "{task}: {error}");
+        assert!(error.location.starts_with("prepare[0]"), "{task}: {error}");
+        assert!(error.message.contains("duplicate"), "{task}: {error}");
+    }
+}
+
+#[test]
 fn explicit_transform_keeps_backtick_sql_and_uses_source_alias() {
     let compiled = compile_dsl(
         "from rows.csv source-id-field id transform `SELECT id, score FROM source ORDER BY id` export id-field id",
