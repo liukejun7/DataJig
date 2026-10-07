@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Mapping
@@ -16,6 +17,26 @@ from datajig.pipeline import (
     apply_pipeline,
     create_pipeline_plan,
     read_pipeline_artifact,
+)
+
+_RUN_RECEIPT_KEYS = frozenset(
+    {
+        "namespace",
+        "kind",
+        "run_receipt_schema_version",
+        "status",
+        "intent_id",
+        "plan_id",
+        "attempt_id",
+        "source_content_id",
+        "pipeline_id",
+        "pipeline_receipt_id",
+        "revision_id",
+        "bundle_id",
+        "consumption_plan_ids",
+        "output",
+        "run_receipt_id",
+    }
 )
 
 
@@ -117,11 +138,119 @@ def _build_run_receipt(
         "consumption_plan_ids": consumption_plan_ids,
         "output": _text(binding, "output"),
     }
+    receipt_id = _run_receipt_identity(basis)
+    return {**basis, "run_receipt_id": receipt_id}
+
+
+def run_lineage(
+    artifact_or_id: str, *, state: Path | None = None
+) -> dict[str, object] | None:
+    candidate = Path(artifact_or_id).expanduser()
+    if candidate.is_file():
+        document = _load_json_object(candidate, "RUN_RECEIPT_TAMPERED")
+        if document.get("kind") != "run_receipt":
+            return None
+    elif artifact_or_id.startswith("runrcpt_") and state is not None:
+        receipt_path = _find_run_receipt(state, artifact_or_id)
+        document = _load_json_object(receipt_path, "RUN_RECEIPT_TAMPERED")
+    else:
+        return None
+    receipt = _verify_run_receipt(document)
+    return {
+        "lineage_schema_version": 1,
+        "pipeline_id": receipt["pipeline_id"],
+        "run_receipt_id": receipt["run_receipt_id"],
+        "nodes": [
+            {"kind": "source", "id": receipt["source_content_id"]},
+            {"kind": "intent", "id": receipt["intent_id"]},
+            {"kind": "plan", "id": receipt["plan_id"]},
+            {"kind": "attempt", "id": receipt["attempt_id"]},
+            {"kind": "revision", "id": receipt["revision_id"]},
+            {"kind": "bundle", "id": receipt["bundle_id"]},
+            {"kind": "consumption", "ids": receipt["consumption_plan_ids"]},
+            {"kind": "run_receipt", "id": receipt["run_receipt_id"]},
+        ],
+        "complete": True,
+    }
+
+
+def _verify_run_receipt(document: Mapping[str, object]) -> dict[str, object]:
+    if set(document) != _RUN_RECEIPT_KEYS:
+        raise PipelineError("RUN_RECEIPT_TAMPERED", "Run receipt has an invalid shape")
+    constants = {
+        "namespace": "datajig",
+        "kind": "run_receipt",
+        "run_receipt_schema_version": 1,
+        "status": "committed",
+    }
+    if any(document.get(key) != value for key, value in constants.items()):
+        raise PipelineError("RUN_RECEIPT_TAMPERED", "Run receipt contract is invalid")
+    prefixes = {
+        "intent_id": "intent",
+        "plan_id": "plan",
+        "attempt_id": "attempt",
+        "source_content_id": "source",
+        "pipeline_id": "pipe",
+        "pipeline_receipt_id": "piped",
+        "revision_id": "rev",
+        "bundle_id": "bundle",
+        "run_receipt_id": "runrcpt",
+    }
+    for key, prefix in prefixes.items():
+        value = document.get(key)
+        if not isinstance(value, str) or re.fullmatch(f"{prefix}_[0-9a-f]{{64}}", value) is None:
+            raise PipelineError("RUN_RECEIPT_TAMPERED", f"Run receipt {key} is invalid")
+    consumption = document.get("consumption_plan_ids")
+    if not isinstance(consumption, list):
+        raise PipelineError(
+            "RUN_RECEIPT_TAMPERED", "Run receipt consumption_plan_ids are invalid"
+        )
+    consumption_ids: list[str] = []
+    for value in consumption:
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"consume_[0-9a-f]{64}", value) is None
+        ):
+            raise PipelineError(
+                "RUN_RECEIPT_TAMPERED", "Run receipt consumption_plan_ids are invalid"
+            )
+        consumption_ids.append(value)
+    if len(consumption_ids) > 64 or len(set(consumption_ids)) != len(consumption_ids):
+        raise PipelineError(
+            "RUN_RECEIPT_TAMPERED", "Run receipt consumption_plan_ids are invalid"
+        )
+    output = document.get("output")
+    if not isinstance(output, str) or not output:
+        raise PipelineError("RUN_RECEIPT_TAMPERED", "Run receipt output is invalid")
+    basis = {key: value for key, value in document.items() if key != "run_receipt_id"}
+    if document["run_receipt_id"] != _run_receipt_identity(basis):
+        raise PipelineError("RUN_RECEIPT_TAMPERED", "Run receipt identity does not verify")
+    return dict(document)
+
+
+def _run_receipt_identity(basis: Mapping[str, object]) -> str:
     encoded = json.dumps(
         basis, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    receipt_id = "runrcpt_" + blake3.blake3(b"datajig-run-receipt-v1\0" + encoded).hexdigest()
-    return {**basis, "run_receipt_id": receipt_id}
+    return "runrcpt_" + blake3.blake3(
+        b"datajig-run-receipt-v1\0" + encoded
+    ).hexdigest()
+
+
+def _find_run_receipt(state: Path, receipt_id: str) -> Path:
+    root = _find_datajig_root(state)
+    if root is None:
+        raise PipelineError("LINEAGE_NOT_FOUND", "Cannot locate the DataJig run index")
+    matches = [
+        root / _text(entry, "path")
+        for entry in _load_or_rebuild_run_index(root)
+        if entry.get("run_receipt_id") == receipt_id
+    ]
+    if len(matches) != 1:
+        raise PipelineError(
+            "LINEAGE_NOT_FOUND", f"Found {len(matches)} matching run receipts"
+        )
+    return matches[0]
 
 
 def _persist_run_receipt(path: Path, receipt: Mapping[str, object]) -> None:
@@ -175,6 +304,150 @@ def _persist_run_receipt(path: Path, receipt: Mapping[str, object]) -> None:
             os.close(descriptor)
         with suppress(FileNotFoundError):
             temporary.unlink()
+    try:
+        _refresh_run_index(path.parents[3])
+    except OSError as exc:
+        raise PipelineError(
+            "RUN_INDEX_WRITE_FAILED",
+            "Run committed, but its derived status index could not be updated; resume to retry",
+        ) from exc
+
+
+def run_status(state: Path) -> dict[str, object] | None:
+    datajig = _find_datajig_root(state)
+    if datajig is None:
+        return None
+    entries = _load_or_rebuild_run_index(datajig)
+    recent: dict[str, object] | None = None
+    if entries:
+        receipt_path = datajig / _text(entries[0], "path")
+        receipt = _verify_run_receipt(
+            _load_json_object(receipt_path, "RUN_RECEIPT_TAMPERED")
+        )
+        recent = {
+            key: receipt[key]
+            for key in (
+                "run_receipt_id",
+                "intent_id",
+                "plan_id",
+                "attempt_id",
+                "revision_id",
+                "bundle_id",
+                "status",
+            )
+        }
+    recoverable: list[dict[str, str]] = []
+    pending_gc = 0
+    for attempt in sorted((datajig / "runs").glob("*/attempts/attempt_*")):
+        intent = attempt.parents[1].name
+        receipt_path = datajig / "runs" / intent / "receipts" / f"{attempt.name}.json"
+        if receipt_path.is_file():
+            continue
+        if (attempt / "pipeline-plan.json").is_file():
+            plan = _load_json_object(attempt / "plan.json", "RUN_STATE_CORRUPT")
+            recoverable.append(
+                {
+                    "intent_id": intent,
+                    "plan_id": _text(plan, "plan_id"),
+                    "attempt_id": attempt.name,
+                }
+            )
+        else:
+            pending_gc += 1
+        if len(recoverable) == 64:
+            break
+    return {
+        "recent_run": recent,
+        "recoverable_runs": recoverable,
+        "pending_run_gc": pending_gc,
+    }
+
+
+def _find_datajig_root(path: Path) -> Path | None:
+    resolved = path.expanduser().resolve(strict=True)
+    for candidate in (resolved, *resolved.parents):
+        if candidate.name == ".datajig" and (candidate / "runs").is_dir():
+            return candidate
+    return None
+
+
+def _refresh_run_index(datajig: Path) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    candidates = sorted(
+        (datajig / "runs").glob("*/receipts/*.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            receipt = _verify_run_receipt(
+                _load_json_object(path, "RUN_RECEIPT_TAMPERED")
+            )
+        except (OSError, PipelineError):
+            continue
+        entries.append(
+            {
+                "path": path.relative_to(datajig).as_posix(),
+                "run_receipt_id": receipt["run_receipt_id"],
+                "intent_id": receipt["intent_id"],
+                "attempt_id": receipt["attempt_id"],
+            }
+        )
+        if len(entries) == 64:
+            break
+    meta = datajig / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    index_path = meta / "run-index.json"
+    payload = {
+        "namespace": "datajig",
+        "kind": "run_index",
+        "run_index_schema_version": 1,
+        "entries": entries,
+    }
+    temporary = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, index_path)
+    return entries
+
+
+def _load_or_rebuild_run_index(datajig: Path) -> list[dict[str, object]]:
+    index_path = datajig / "meta" / "run-index.json"
+    try:
+        index = _load_json_object(index_path, "RUN_INDEX_CORRUPT")
+        if (
+            index.get("namespace") != "datajig"
+            or index.get("kind") != "run_index"
+            or index.get("run_index_schema_version") != 1
+        ):
+            raise PipelineError("RUN_INDEX_CORRUPT", "Run index contract is invalid")
+        raw_entries = index.get("entries")
+        if not isinstance(raw_entries, list) or len(raw_entries) > 64:
+            raise PipelineError("RUN_INDEX_CORRUPT", "Run index entries are invalid")
+        entries: list[dict[str, object]] = []
+        for entry in raw_entries:
+            if not isinstance(entry, dict) or set(entry) != {
+                "path",
+                "run_receipt_id",
+                "intent_id",
+                "attempt_id",
+            }:
+                raise PipelineError("RUN_INDEX_CORRUPT", "Run index entry is invalid")
+            relative = Path(_text(entry, "path"))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise PipelineError("RUN_INDEX_CORRUPT", "Run index path is invalid")
+            receipt_path = datajig / relative
+            receipt = _verify_run_receipt(
+                _load_json_object(receipt_path, "RUN_INDEX_CORRUPT")
+            )
+            if receipt.get("run_receipt_id") != entry.get("run_receipt_id"):
+                raise PipelineError("RUN_INDEX_CORRUPT", "Run index identity is stale")
+            entries.append(dict(entry))
+        return entries
+    except (OSError, PipelineError):
+        return _refresh_run_index(datajig)
 
 
 def _prepare_run_source(root: Path, attempt: Path, ast: Mapping[str, object]) -> Path:

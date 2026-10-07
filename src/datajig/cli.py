@@ -376,6 +376,7 @@ deterministic id in transform SQL before DataJig versions it.""",
     status_parser.add_argument("--threads", "--workers", type=int, default=1)
     status_parser.add_argument("--change")
     status_parser.add_argument("--changeset")
+    status_parser.add_argument("--format", choices=("json", "text"), default="json")
 
     inventory_parser = subparsers.add_parser("inventory", help="inspect an ImageFolder dataset")
     inventory_parser.add_argument("root", type=Path)
@@ -590,13 +591,22 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
 def _run_lineage(args: argparse.Namespace) -> int:
     from datajig.pipeline import PipelineError, envelope, pipeline_lineage
+    from datajig.run import run_lineage
 
     try:
-        artifact = pipeline_lineage(args.artifact_or_id, state=args.state)
+        artifact = run_lineage(args.artifact_or_id, state=args.state)
+        if artifact is None:
+            artifact = pipeline_lineage(args.artifact_or_id, state=args.state)
         if args.format == "text":
+            raw_nodes = artifact.get("nodes")
+            nodes = raw_nodes if isinstance(raw_nodes, list) else []
             artifact = {
                 **artifact,
-                "text": "source -> transform -> revision -> bundle -> consumption_plan",
+                "text": " -> ".join(
+                    str(node["kind"])
+                    for node in nodes
+                    if isinstance(node, dict) and "kind" in node
+                ),
             }
         print(
             json.dumps(
@@ -685,8 +695,19 @@ def _run_compare(args: argparse.Namespace) -> int:
 
 
 def _run_native_command(raw_args: Sequence[str]) -> int:
+    native_args = list(raw_args)
+    status_format = "json"
+    if native_args and native_args[0] == "status" and "--format" in native_args:
+        index = native_args.index("--format")
+        if index + 1 >= len(native_args) or native_args[index + 1] not in {"json", "text"}:
+            _print_agent_error(
+                "INVALID_ARGUMENT", "--format must be json or text", command="status"
+            )
+            return 2
+        status_format = native_args[index + 1]
+        del native_args[index : index + 2]
     try:
-        completed = run_native(raw_args)
+        completed = run_native(native_args)
     except TransformProviderUnavailableError as exc:
         _print_agent_error(exc.code, str(exc), command=raw_args[0] if raw_args else None)
         return 2
@@ -720,7 +741,9 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
             _print_agent_error("RUN_EXECUTION_FAILED", str(exc), command="run")
             return 2
     if completed.returncode == 0 and raw_args and raw_args[0] == "status":
-        stdout = _augment_status_with_pipeline(stdout, raw_args)
+        stdout = _augment_status_with_pipeline(stdout, native_args)
+        if status_format == "text":
+            stdout = _render_status_text(stdout)
     elif completed.returncode == 0 and raw_args and raw_args[0] == "capabilities":
         stdout = _augment_capabilities_with_pipeline(stdout)
     sys.stdout.buffer.write(stdout.encode("utf-8"))
@@ -736,6 +759,7 @@ def _augment_capabilities_with_pipeline(serialized: str) -> str:
         payload["pipeline_plan_schema_versions"] = [1]
         payload["pipeline_receipt_schema_versions"] = [1]
         payload["pipeline_lineage_schema_versions"] = [1]
+        payload["status_formats"] = ["json", "text"]
         payload["artifact_file_shape"] = "flat"
         payload["cli_response_shape"] = "agent_envelope_v1"
         payload["delivery_update"] = {
@@ -751,6 +775,8 @@ def _augment_capabilities_with_pipeline(serialized: str) -> str:
                     "recoverable_pipeline": True,
                     "pipeline_lineage": True,
                     "fixed_delivery_updates": True,
+                    "immutable_run_receipts": True,
+                    "run_status_index": True,
                 }
             )
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
@@ -760,6 +786,7 @@ def _augment_capabilities_with_pipeline(serialized: str) -> str:
 
 def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> str:
     from datajig.pipeline import PipelineError, read_pipeline_document
+    from datajig.run import run_status
 
     try:
         payload = json.loads(serialized)
@@ -784,8 +811,37 @@ def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> s
                 "bundle_id": receipt.get("bundle_id"),
                 "status": receipt.get("status"),
             }
+        observed_run = run_status(state)
+        if observed_run is not None:
+            artifact.update(observed_run)
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     except (OSError, ValueError, PipelineError):
+        return serialized
+
+
+def _render_status_text(serialized: str) -> str:
+    try:
+        payload = json.loads(serialized)
+        artifact = payload.get("artifact")
+        if not isinstance(payload, dict) or not isinstance(artifact, dict):
+            return serialized
+        recent = artifact.get("recent_run")
+        recent_id = recent.get("run_receipt_id") if isinstance(recent, dict) else "none"
+        recoverable = artifact.get("recoverable_runs")
+        recoverable_count = len(recoverable) if isinstance(recoverable, list) else 0
+        lines = [
+            "DataJig workspace",
+            f"dataset: {artifact.get('dataset_id', 'unknown')}",
+            f"HEAD: {artifact.get('head_revision_id', 'unknown')}",
+            f"clean: {artifact.get('clean', False)}",
+            f"active change: {artifact.get('change_id') or 'none'}",
+            f"recent run: {recent_id}",
+            f"recoverable runs: {recoverable_count}",
+            f"pending run GC: {artifact.get('pending_run_gc', 0)}",
+        ]
+        artifact["text"] = "\n".join(lines) + "\n"
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    except (TypeError, ValueError):
         return serialized
 
 

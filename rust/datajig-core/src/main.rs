@@ -560,6 +560,9 @@ enum Command {
         /// Exact changeset_... ID or alias. Omit both selectors to inspect one active pair.
         #[arg(long, requires = "change")]
         changeset: Option<String>,
+        /// Render the agent envelope as JSON or include a compact human summary.
+        #[arg(long, value_parser = ["json", "text"], default_value = "json")]
+        format: String,
     },
     /// Inspect an ImageFolder dataset and write a media inventory.
     Inventory {
@@ -2075,6 +2078,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             threads,
             change,
             changeset,
+            format,
         } => {
             let automatic_binding = change.is_none() && changeset.is_none();
             let workspace_status = if automatic_binding {
@@ -2120,17 +2124,23 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             } else {
                 json!([{"command": "check", "args": ["--state", state]}])
             };
-            println!(
-                "{}",
-                json!({
-                    "agent_api_version": AGENT_API_VERSION,
-                    "backend": "rust",
-                    "kind": "workspace_status",
-                    "decision": artifact.decision,
-                    "next_actions": next_actions,
-                    "artifact": artifact
-                })
-            );
+            let mut response = json!({
+                "agent_api_version": AGENT_API_VERSION,
+                "backend": "rust",
+                "kind": "workspace_status",
+                "decision": artifact.decision,
+                "next_actions": next_actions,
+                "artifact": artifact
+            });
+            if format == "text" {
+                let head = response["artifact"]["head_revision_id"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                let clean = response["artifact"]["clean"].as_bool().unwrap_or(false);
+                response["artifact"]["text"] =
+                    json!(format!("DataJig workspace\nHEAD: {head}\nclean: {clean}\n"));
+            }
+            println!("{response}");
         }
         Command::Inventory {
             root,
