@@ -635,6 +635,14 @@ fn pipeline_config_schema() -> Value {
             "run_id":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}
         }),
     );
+    let run = strict_object(
+        &["intent_id", "plan_id", "attempt_id"],
+        json!({
+            "intent_id":{"type":"string","pattern":"^intent_[0-9a-f]{64}$"},
+            "plan_id":{"type":"string","pattern":"^plan_[0-9a-f]{64}$"},
+            "attempt_id":{"type":"string","pattern":"^attempt_[0-9a-f]{64}$"}
+        }),
+    );
     strict_object(
         &[
             "schema_version",
@@ -655,7 +663,8 @@ fn pipeline_config_schema() -> Value {
             "transform":transform,
             "validate":validate,
             "export":export,
-            "consumption_plan":{"type":"array","items":consumption}
+            "consumption_plan":{"type":"array","items":consumption},
+            "run":run
         }),
     )
 }

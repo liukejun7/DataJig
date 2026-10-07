@@ -703,7 +703,9 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
             if isinstance(payload, dict) and payload.get("kind") == "run_plan_accepted":
                 from datajig.run import execute_accepted_run
 
-                payload = execute_accepted_run(payload, Path.cwd())
+                payload = execute_accepted_run(
+                    payload, Path.cwd(), allow_recovery="--resume" in raw_args
+                )
                 stdout = (
                     json.dumps(
                         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")

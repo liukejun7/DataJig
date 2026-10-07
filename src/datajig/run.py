@@ -6,6 +6,8 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
+import blake3
+
 from datajig.native import run_native
 from datajig.pipeline import (
     PipelineError,
@@ -15,7 +17,9 @@ from datajig.pipeline import (
 )
 
 
-def execute_accepted_run(response: Mapping[str, object], root: Path) -> dict[str, object]:
+def execute_accepted_run(
+    response: Mapping[str, object], root: Path, *, allow_recovery: bool = False
+) -> dict[str, object]:
     artifact = _mapping(response.get("artifact"), "run response artifact")
     if response.get("kind") != "run_plan_accepted" or response.get("decision") != "ready":
         return dict(response)
@@ -30,7 +34,11 @@ def execute_accepted_run(response: Mapping[str, object], root: Path) -> dict[str
     if not attempt.is_dir() or not workspace.is_dir():
         raise PipelineError("RUN_STATE_CORRUPT", "Accepted run workspace is missing")
 
+    expected_source = _text(binding, "source_content_id")
+    source_path = _text(_mapping(ast.get("source"), "source"), "path")
+    _verify_source_binding(root, source_path, expected_source)
     prepared = _prepare_run_source(root, attempt, ast)
+    _verify_source_binding(root, source_path, expected_source)
     pipeline_plan_path = attempt / "pipeline-plan.json"
     if pipeline_plan_path.exists():
         pipeline_plan = read_pipeline_artifact(pipeline_plan_path, verify=True)
@@ -41,11 +49,13 @@ def execute_accepted_run(response: Mapping[str, object], root: Path) -> dict[str
             pipeline_plan = create_pipeline_plan(config_path, pipeline_plan_path)
         finally:
             config_path.unlink(missing_ok=True)
-    receipt, decision = apply_pipeline(
-        pipeline_plan_path,
-        _text(pipeline_plan, "pipeline_id"),
-        resume=False,
-    )
+    pipeline_id = _text(pipeline_plan, "pipeline_id")
+    try:
+        receipt, decision = apply_pipeline(pipeline_plan_path, pipeline_id, resume=False)
+    except PipelineError as exc:
+        if not allow_recovery or exc.code != "PIPELINE_RECOVERY_REQUIRED":
+            raise
+        receipt, decision = apply_pipeline(pipeline_plan_path, pipeline_id, resume=True)
     return {
         "agent_api_version": 1,
         "backend": "python-pipeline",
@@ -162,7 +172,66 @@ def _pipeline_config(
         },
         "export": {"split": split_values},
         "consumption_plan": consumers,
+        "run": {
+            "intent_id": _text(artifact, "intent_id"),
+            "plan_id": _text(artifact, "plan_id"),
+            "attempt_id": _text(artifact, "attempt_id"),
+        },
     }
+
+
+def _verify_source_binding(root: Path, logical: str, expected: str) -> None:
+    observed = _fingerprint_run_source(root, logical)
+    if observed != expected:
+        raise PipelineError(
+            "SOURCE_CHANGED",
+            "Run source changed after plan acceptance; create and accept a new run plan",
+            expected_source_content_id=expected,
+            actual_source_content_id=observed,
+        )
+
+
+def _fingerprint_run_source(root: Path, logical: str) -> str:
+    relative = Path(logical)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise PipelineError("RUN_PATH_INVALID", "Run source must be a normalized relative path")
+    source = root / relative
+    try:
+        metadata = source.lstat()
+    except OSError as exc:
+        raise PipelineError("SOURCE_LOAD_FAILED", f"Cannot inspect run source: {exc}") from exc
+    if source.is_symlink() or not (source.is_file() or source.is_dir()):
+        raise PipelineError("SOURCE_LOAD_FAILED", "Run source must be a direct file or directory")
+    if metadata.st_mode == 0:
+        raise PipelineError("SOURCE_LOAD_FAILED", "Run source metadata is invalid")
+    if source.is_file():
+        files = [(".", source)]
+    else:
+        files = []
+        for candidate in source.rglob("*"):
+            candidate_metadata = candidate.lstat()
+            if candidate.is_symlink():
+                raise PipelineError("SOURCE_LOAD_FAILED", "Run source contains a symbolic link")
+            if candidate.is_file():
+                files.append((candidate.relative_to(source).as_posix(), candidate))
+            elif not candidate.is_dir():
+                raise PipelineError("SOURCE_LOAD_FAILED", "Run source contains a special file")
+            if candidate_metadata.st_mode == 0:
+                raise PipelineError("SOURCE_LOAD_FAILED", "Run source metadata is invalid")
+        files.sort(key=lambda item: item[0])
+    if not files:
+        raise PipelineError("SOURCE_LOAD_FAILED", "Run source contains no files")
+    digest = blake3.blake3(b"datajig-run-source-v1\0")
+    for name, path in files:
+        encoded_name = name.encode("utf-8")
+        digest.update(len(encoded_name).to_bytes(8, "little"))
+        digest.update(encoded_name)
+        size = path.stat().st_size
+        digest.update(size.to_bytes(8, "little"))
+        with path.open("rb") as stream:
+            while chunk := stream.read(64 * 1024):
+                digest.update(chunk)
+    return f"source_{digest.hexdigest()}"
 
 
 def _transform_sql(transform: Mapping[str, object]) -> str:

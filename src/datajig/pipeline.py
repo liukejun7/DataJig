@@ -38,6 +38,7 @@ _TOP_KEYS = frozenset(
         "validate",
         "export",
         "consumption_plan",
+        "run",
     }
 )
 
@@ -99,6 +100,15 @@ def _required_text(data: Mapping[str, object], key: str, context: str) -> str:
         _fail(f"{context}.{key} must be a non-empty string")
     if any(ord(character) < 32 and character not in "\n\r\t" for character in value):
         _fail(f"{context}.{key} contains control characters")
+    return value
+
+
+def _required_identity(
+    data: Mapping[str, object], key: str, prefix: str, context: str
+) -> str:
+    value = _required_text(data, key, context)
+    if re.fullmatch(rf"{re.escape(prefix)}_[0-9a-f]{{64}}", value) is None:
+        _fail(f"{context}.{key} must be an exact {prefix}_ content identity")
     return value
 
 
@@ -343,6 +353,17 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         consumption.append({"consumer": consumer_name, "split": split, "run_id": run_id})
     consumption.sort(key=lambda item: (item["split"], item["consumer"], item["run_id"]))
 
+    run_binding: dict[str, str] | None = None
+    if data.get("run") is not None:
+        run = _object(
+            data.get("run"), frozenset({"intent_id", "plan_id", "attempt_id"}), "run"
+        )
+        run_binding = {
+            "intent_id": _required_identity(run, "intent_id", "intent", "run"),
+            "plan_id": _required_identity(run, "plan_id", "plan", "run"),
+            "attempt_id": _required_identity(run, "attempt_id", "attempt", "run"),
+        }
+
     base_revision = _base_revision(config_path.parent, target_normalized)
     try:
         provider_identity = _probe()
@@ -370,6 +391,8 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         "bundle_spec_id": bundle_spec_id,
         "consumption_plan": consumption,
     }
+    if run_binding is not None:
+        authorization["run"] = run_binding
     pipeline_id = _identity("pipe", b"datajig-pipeline-plan-v1", authorization)
     artifact: dict[str, object] = {
         "namespace": "datajig",
@@ -388,6 +411,8 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         "base_revision": base_revision,
         "bindings": {"config_base": os.path.relpath(config_path.parent, plan_path.parent)},
     }
+    if run_binding is not None:
+        artifact["run"] = run_binding
     planned_paths = _execution_paths(artifact, plan_path)
     if planned_paths["delivery"].exists() or planned_paths["delivery"].is_symlink():
         if target_normalized["mode"] != "update":
@@ -647,6 +672,7 @@ def read_pipeline_artifact(path: Path, verify: bool = False) -> dict[str, object
             "provider_identity",
             "base_revision",
             "bindings",
+            "run",
         }
         unknown = sorted(set(payload) - allowed)
         if unknown:
@@ -691,6 +717,8 @@ def calculate_pipeline_id(plan: Mapping[str, object]) -> str:
         "bundle_spec_id": plan.get("bundle_spec_id"),
         "consumption_plan": plan.get("consumption_plan"),
     }
+    if plan.get("run") is not None:
+        authorization["run"] = plan.get("run")
     return _identity("pipe", b"datajig-pipeline-plan-v1", authorization)
 
 
@@ -1721,6 +1749,8 @@ def _build_delivery_receipt(
         "delivery": str(paths["delivery"].resolve()),
         "no_op": bool(artifacts.get("no_op", False)),
     }
+    if plan.get("run") is not None:
+        receipt_basis["run"] = plan.get("run")
     if isinstance(artifacts.get("delivery_backup"), str):
         receipt_basis["delivery_backup"] = artifacts["delivery_backup"]
     receipt_id = _identity("piped", b"datajig-pipeline-receipt-v1", receipt_basis)
