@@ -1,5 +1,7 @@
 mod ast;
 mod error;
+mod lexer;
+mod parser;
 
 pub use ast::{
     CompiledRunTask, PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunExportAst,
@@ -7,3 +9,4 @@ pub use ast::{
     SourceIdMode, TrainingSplitsAst, canonicalize_run_task,
 };
 pub use error::RunDslError;
+pub use parser::compile_dsl;

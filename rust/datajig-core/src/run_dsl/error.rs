@@ -12,14 +12,30 @@ pub struct RunDslError {
 }
 
 impl RunDslError {
-    pub(crate) fn internal(message: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        code: impl Into<String>,
+        location: impl Into<String>,
+        position: usize,
+        message: impl Into<String>,
+        remediation: impl Into<String>,
+    ) -> Self {
         Self {
-            code: "DSL_INTERNAL_ERROR".into(),
-            location: "task".into(),
-            position: 0,
+            code: code.into(),
+            location: location.into(),
+            position,
             message: message.into(),
-            remediation: "retry with a valid DataJig DSL v1 task".into(),
+            remediation: remediation.into(),
         }
+    }
+
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self::new(
+            "DSL_INTERNAL_ERROR",
+            "task",
+            0,
+            message,
+            "retry with a valid DataJig DSL v1 task",
+        )
     }
 }
 

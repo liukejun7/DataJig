@@ -139,7 +139,7 @@ pub use revision::{
 pub use run_dsl::{
     CompiledRunTask, PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunDslError,
     RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat,
-    SourceIdAst, SourceIdMode, TrainingSplitsAst, canonicalize_run_task,
+    SourceIdAst, SourceIdMode, TrainingSplitsAst, canonicalize_run_task, compile_dsl,
 };
 #[cfg(unix)]
 use std::ffi::OsString;
