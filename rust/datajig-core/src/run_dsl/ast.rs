@@ -41,7 +41,10 @@ impl RunTaskAst {
                 steps: Vec::new(),
             },
             transform: RunTransformAst::Sql {
-                sql: format!("SELECT * FROM source ORDER BY {id_field}"),
+                sql: format!(
+                    "SELECT * FROM source ORDER BY {}",
+                    sql_identifier(&id_field)
+                ),
                 generated: true,
             },
             export: RunExportAst {
@@ -49,6 +52,19 @@ impl RunTaskAst {
                 id_field,
             },
         }
+    }
+}
+
+pub(crate) fn sql_identifier(field: &str) -> String {
+    let mut characters = field.chars();
+    let bare = characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric());
+    if bare {
+        field.to_owned()
+    } else {
+        format!("\"{}\"", field.replace('"', "\"\""))
     }
 }
 

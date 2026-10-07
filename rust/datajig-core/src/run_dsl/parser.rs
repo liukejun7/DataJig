@@ -3,7 +3,7 @@ use super::ast::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
     FilterPredicateAst, MissingModeAst, PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RunExportAst,
     RunPrepareAst, RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat, SourceIdAst,
-    SourceIdMode, TrainingSplitsAst, canonicalize_run_task,
+    SourceIdMode, TrainingSplitsAst, canonicalize_run_task, sql_identifier,
 };
 use super::lexer::{Token, TokenKind, lex};
 use serde_json::{Number, Value};
@@ -49,6 +49,7 @@ impl Parser {
             None
         };
         let format = explicit_format.or_else(|| infer_format(&path));
+        self.reject_unsupported_control_flow()?;
 
         if !self.consume_keyword("source-id-field") {
             return Err(self.error(
@@ -80,6 +81,7 @@ impl Parser {
         } else {
             Vec::new()
         };
+        self.reject_unsupported_control_flow()?;
 
         let parsed_transform = if self.consume_keyword("transform") {
             Some(self.parse_sql_transform()?)
@@ -88,6 +90,7 @@ impl Parser {
         } else {
             None
         };
+        self.reject_unsupported_control_flow()?;
 
         if !self.consume_keyword("export") {
             return Err(self.error(
@@ -113,14 +116,13 @@ impl Parser {
             Some(RunTransformAst::Aggregate { by, .. }) => Some(by.clone()),
             _ => None,
         };
-        let id_field = if self.consume_keyword("id-field") {
+        let (id_field, id_field_position) = if self.consume_keyword("id-field") {
             self.take_value(
                 "export.id-field",
                 "provide the final record field after `id-field`",
             )?
-            .0
         } else if let Some(by) = aggregate_default_id {
-            by
+            (by, self.position())
         } else {
             return Err(self.error(
                 "INVALID_DSL",
@@ -143,7 +145,7 @@ impl Parser {
         if generated_source_id.is_some() {
             preserve_generated_source_id(&mut prepare_steps);
         } else {
-            reject_reserved_field(&id_field, "export.id-field", self.end_position)?;
+            reject_reserved_field(&id_field, "export.id-field", id_field_position)?;
         }
         if let Some(RunTransformAst::Aggregate {
             by, aggregations, ..
@@ -157,7 +159,7 @@ impl Parser {
                 return Err(RunDslError::new(
                     "INVALID_DSL",
                     "export.id-field",
-                    self.end_position,
+                    id_field_position,
                     format!("id-field `{id_field}` is not present in the aggregate output"),
                     "use the group field or an aggregate alias as id-field",
                 ));
@@ -581,6 +583,25 @@ impl Parser {
         self.tokens.get(self.cursor).map(|token| &token.kind)
     }
 
+    fn reject_unsupported_control_flow(&self) -> Result<(), RunDslError> {
+        let Some(token) = self.tokens.get(self.cursor) else {
+            return Ok(());
+        };
+        if ["join", "loop", "branch"]
+            .iter()
+            .any(|keyword| token.is_word(keyword))
+        {
+            return Err(RunDslError::new(
+                "UNSUPPORTED_TASK",
+                "task",
+                token.start,
+                "DataJig DSL v1 does not support joins, branches, or loops",
+                "use one local source and a linear from/prepare/transform/export task",
+            ));
+        }
+        Ok(())
+    }
+
     fn take_percentage(&mut self, location: &str) -> Result<u16, RunDslError> {
         let (value, position) = self.take_value(location, "use a positive integer percentage")?;
         value.parse::<u16>().map_err(|_| {
@@ -818,13 +839,9 @@ fn parse_number(value: &str) -> Option<Number> {
 
 fn reject_known_unsupported(tokens: &[Token]) -> Result<(), RunDslError> {
     let unsupported = tokens.iter().find(|token| {
-        token.value().is_some_and(|value| {
-            value.starts_with("http://")
-                || value.starts_with("https://")
-                || ["join", "loop", "branch"].iter().any(|keyword| {
-                    matches!(&token.kind, TokenKind::Word(_)) && value.eq_ignore_ascii_case(keyword)
-                })
-        })
+        token
+            .value()
+            .is_some_and(|value| value.starts_with("http://") || value.starts_with("https://"))
     });
     if let Some(token) = unsupported {
         return Err(RunDslError::new(
@@ -883,7 +900,8 @@ fn validate_path(path: &str, position: usize) -> Result<(), RunDslError> {
 }
 
 fn validate_splits(train: u16, val: u16, test: u16, position: usize) -> Result<(), RunDslError> {
-    if train == 0 || val == 0 || test == 0 || train + val + test != 100 {
+    let total = u32::from(train) + u32::from(val) + u32::from(test);
+    if train == 0 || val == 0 || test == 0 || total != 100 {
         return Err(RunDslError::new(
             "INVALID_DSL",
             "export.splits",
@@ -895,17 +913,4 @@ fn validate_splits(train: u16, val: u16, test: u16, position: usize) -> Result<(
         ));
     }
     Ok(())
-}
-
-fn sql_identifier(field: &str) -> String {
-    let mut characters = field.chars();
-    let bare = characters
-        .next()
-        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
-        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric());
-    if bare {
-        field.to_owned()
-    } else {
-        format!("\"{}\"", field.replace('"', "\"\""))
-    }
 }

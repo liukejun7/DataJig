@@ -141,3 +141,37 @@ fn parent_path_traversal_is_rejected_during_compilation() {
     assert_eq!(error.location, "source.path");
     assert!(error.message.contains(".."));
 }
+
+#[test]
+fn oversized_split_values_fail_without_integer_overflow() {
+    let error = compile_dsl(
+        "from rows.csv source-id-field id export train 65535 val 65535 test 65535 id-field id",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_DSL");
+    assert_eq!(error.location, "export.splits");
+    assert!(error.message.contains("65535"));
+}
+
+#[test]
+fn unsupported_keywords_remain_valid_when_used_as_identifiers() {
+    let compiled = compile_dsl("from join source-id-field loop export id-field branch").unwrap();
+
+    assert_eq!(compiled.ast.source.path, "join");
+    assert_eq!(compiled.ast.source.source_id_field.field, "loop");
+    assert_eq!(compiled.ast.export.id_field, "branch");
+}
+
+#[test]
+fn identity_helper_quotes_non_bare_final_ids() {
+    let ast = RunTaskAst::identity("rows.csv", SourceFormat::Csv, "Record ID");
+
+    assert_eq!(
+        ast.transform,
+        RunTransformAst::Sql {
+            sql: "SELECT * FROM source ORDER BY \"Record ID\"".into(),
+            generated: true,
+        }
+    );
+}
