@@ -176,7 +176,32 @@ pub enum DedupeKeepAst {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunTransformAst {
-    Sql { sql: String, generated: bool },
+    Sql {
+        sql: String,
+        generated: bool,
+    },
+    Aggregate {
+        by: String,
+        aggregations: Vec<AggregateAst>,
+        order_by: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct AggregateAst {
+    pub alias: String,
+    pub function: AggregateFunctionAst,
+    pub field: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregateFunctionAst {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
