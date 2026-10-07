@@ -150,21 +150,36 @@ jobs:
       - python
       - cli-integration
       - python-compatibility
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     env:
-      PREVIEW_TAG: v0.9.0-m1-preview.1
+      PREVIEW_TAG: v0.9.0-m1-preview.2
       PREVIEW_ARCHIVE: datajig-0.9-m1-preview-linux-x86_64.tar.gz
     steps:
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          name: datajig-native-linux-x86_64
-          path: preview
+          toolchain: 1.85.0
+      - name: Build Ubuntu 22.04 compatible binary
+        run: cargo build --release --locked --manifest-path rust/Cargo.toml --workspace
+      - name: Verify runtime compatibility
+        run: |
+          rust/target/release/datajig-core --version
+          highest_glibc="$({ objdump -T rust/target/release/datajig-core \
+            | sed -n 's/.*(GLIBC_\([^)]*\)).*/\1/p' \
+            | sort -Vu \
+            | tail -1; } || true)"
+          echo "Highest required GLIBC version: ${highest_glibc:-none}"
+          if [ -n "$highest_glibc" ] && \
+             [ "$(printf '%s\n' "$highest_glibc" '2.35' | sort -V | tail -1)" != '2.35' ]; then
+            echo "Binary requires GLIBC newer than Ubuntu 22.04 provides" >&2
+            exit 1
+          fi
       - name: Package preview binary
         run: |
-          chmod +x preview/datajig-core
-          tar -C preview -czf "$PREVIEW_ARCHIVE" datajig-core
+          chmod +x rust/target/release/datajig-core
+          tar -C rust/target/release -czf "$PREVIEW_ARCHIVE" datajig-core
           sha256sum "$PREVIEW_ARCHIVE" > "$PREVIEW_ARCHIVE.sha256"
       - name: Publish preview release assets
         env:
