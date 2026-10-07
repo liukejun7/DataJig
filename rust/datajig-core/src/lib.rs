@@ -142,6 +142,7 @@ pub use run_control::{
     RunConsumptionBinding, RunControlError, RunIdentities, RunLayout, RunPlanArtifact,
     RunPlanBinding, authorize_run, classify_run_output, create_run_plan, derive_run_identities,
     fingerprint_run_source, load_run_plan_for_resume, persist_run_plan, resolve_run_source_format,
+    validate_run_source_output_separation,
 };
 pub use run_dsl::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
@@ -176,7 +177,7 @@ pub use training_consumption::{
     ConsumptionNotAuthorizedError, StaleConsumptionInputError, TRAINING_CONSUMPTION_CLAIM,
     TRAINING_CONSUMPTION_PLAN_SCHEMA_VERSION, TRAINING_CONSUMPTION_RECEIPT_SCHEMA_VERSION,
     TrainingConsumptionPlanArtifact, TrainingConsumptionRuntime, inspect_training_consumption,
-    plan_training_consumption,
+    plan_training_consumption, plan_training_consumption_for_publication,
 };
 pub use transform::{
     MAX_TRANSFORM_INPUTS, MAX_TRANSFORM_OUTPUT_BYTES, MAX_TRANSFORM_OUTPUT_FIELDS,

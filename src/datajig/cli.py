@@ -698,15 +698,15 @@ def _run_compare(args: argparse.Namespace) -> int:
 def _run_native_command(raw_args: Sequence[str]) -> int:
     native_args = list(raw_args)
     status_format = "json"
-    if native_args and native_args[0] == "status" and "--format" in native_args:
-        index = native_args.index("--format")
-        if index + 1 >= len(native_args) or native_args[index + 1] not in {"json", "text"}:
+    if native_args and native_args[0] == "status":
+        requested_format = _pop_cli_option(native_args, "--format")
+        if requested_format is not None and requested_format not in {"json", "text"}:
             _print_agent_error(
                 "INVALID_ARGUMENT", "--format must be json or text", command="status"
             )
             return 2
-        status_format = native_args[index + 1]
-        del native_args[index : index + 2]
+        if requested_format is not None:
+            status_format = requested_format
     try:
         completed = run_native(native_args)
     except TransformProviderUnavailableError as exc:
@@ -802,11 +802,8 @@ def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> s
         artifact = payload.get("artifact")
         if not isinstance(payload, dict) or not isinstance(artifact, dict):
             return serialized
-        state = Path(".datajig")
-        for index, item in enumerate(raw_args[:-1]):
-            if item == "--state":
-                state = Path(raw_args[index + 1])
-                break
+        state_value = _cli_option_value(raw_args, "--state")
+        state = Path(state_value) if state_value is not None else Path(".datajig")
         receipts = list((state.expanduser().resolve() / "pipelines").glob("pipe_*/receipt.json"))
         if not receipts:
             artifact["recent_pipeline"] = None
@@ -826,6 +823,30 @@ def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> s
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     except (OSError, ValueError):
         return serialized
+
+
+def _cli_option_value(args: Sequence[str], option: str) -> str | None:
+    for index, item in enumerate(args):
+        if item == option:
+            return args[index + 1] if index + 1 < len(args) else ""
+        prefix = f"{option}="
+        if item.startswith(prefix):
+            return item[len(prefix) :]
+    return None
+
+
+def _pop_cli_option(args: list[str], option: str) -> str | None:
+    for index, item in enumerate(args):
+        if item == option:
+            value = args[index + 1] if index + 1 < len(args) else ""
+            del args[index : min(index + 2, len(args))]
+            return value
+        prefix = f"{option}="
+        if item.startswith(prefix):
+            value = item[len(prefix) :]
+            del args[index]
+            return value
+    return None
 
 
 def _render_status_text(serialized: str) -> str:

@@ -27,10 +27,11 @@ use datajig_core::{
     install_repository, is_patchable_quality_code, list_findings, load_manifest, load_report,
     load_run_plan_for_resume, locate_changeset_finding, manifest_diff_page, materialize_revision,
     persist_run_plan, plan_changeset, plan_hf_import, plan_prepare, plan_training_consumption,
-    plan_transform, plan_workspace, preview_jsonl_patch, resolve_change_selector,
-    resolve_optional_changeset_context, resolve_run_source_format, revision_log, run_tutorial,
-    seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset, status_changeset,
-    status_workspace, undo_jsonl_patch, write_agent_skill,
+    plan_training_consumption_for_publication, plan_transform, plan_workspace, preview_jsonl_patch,
+    resolve_change_selector, resolve_optional_changeset_context, resolve_run_source_format,
+    revision_log, run_tutorial, seal_changeset, seal_changeset_detached, seal_workspace,
+    stage_changeset, status_changeset, status_workspace, undo_jsonl_patch,
+    validate_run_source_output_separation, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -236,6 +237,9 @@ enum Command {
         /// New consumption plan artifact.
         #[arg(long)]
         plan: PathBuf,
+        /// Final manifest path that an atomic publisher will expose with this plan.
+        #[arg(long, hide = true)]
+        published_manifest: Option<PathBuf>,
     },
     /// Verify one accepted training consumption plan and its live bundle.
     ConsumeInfo {
@@ -1166,6 +1170,8 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 let compiled = resolve_run_source_format(&root, compiled)
                     .map_err(run_control_command_error)?;
                 let source = PathBuf::from(&compiled.ast.source.path);
+                validate_run_source_output_separation(&source, &output)
+                    .map_err(run_control_command_error)?;
                 let source_content_id =
                     fingerprint_run_source(&root, &source).map_err(run_control_command_error)?;
                 let output_text = output.to_str().ok_or_else(|| {
@@ -1361,10 +1367,22 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             run_id,
             output,
             plan,
+            published_manifest,
         } => {
-            let artifact =
+            let artifact = if let Some(published_manifest) = published_manifest {
+                plan_training_consumption_for_publication(
+                    &manifest,
+                    &split,
+                    &consumer,
+                    &run_id,
+                    &output,
+                    &plan,
+                    Some(&published_manifest),
+                )
+            } else {
                 plan_training_consumption(&manifest, &split, &consumer, &run_id, &output, &plan)
-                    .map_err(training_consumption_command_error)?;
+            }
+            .map_err(training_consumption_command_error)?;
             println!(
                 "{}",
                 json!({
@@ -2638,6 +2656,8 @@ fn reverify_resumed_run(
         .map_err(run_dsl_command_error)?;
     resolve_run_source_format(root, compiled).map_err(run_control_command_error)?;
     let source = PathBuf::from(&plan.canonical_ast.source.path);
+    validate_run_source_output_separation(&source, Path::new(&plan.binding.output))
+        .map_err(run_control_command_error)?;
     let current_source =
         fingerprint_run_source(root, &source).map_err(run_control_command_error)?;
     if current_source != plan.binding.source_content_id {
@@ -2688,6 +2708,7 @@ fn run_control_command_error(error: RunControlError) -> CommandError {
         "SOURCE_FORMAT_MISMATCH" => "SOURCE_FORMAT_MISMATCH",
         "SOURCE_FORMAT_UNSUPPORTED" => "SOURCE_FORMAT_UNSUPPORTED",
         "RUN_PATH_INVALID" => "RUN_PATH_INVALID",
+        "RUN_PATH_OVERLAP" => "RUN_PATH_OVERLAP",
         "RUN_PLAN_READ_FAILED" => "RUN_PLAN_READ_FAILED",
         "RUN_PLAN_WRITE_FAILED" => "RUN_PLAN_WRITE_FAILED",
         _ => "INVALID_ARGUMENT",

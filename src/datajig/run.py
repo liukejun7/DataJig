@@ -258,11 +258,13 @@ def _find_run_receipt(state: Path, receipt_id: str) -> Path:
     root = _find_datajig_root(state)
     if root is None:
         raise PipelineError("LINEAGE_NOT_FOUND", "Cannot locate the DataJig run index")
-    matches = [
-        root / _text(entry, "path")
-        for entry in _load_or_rebuild_run_index(root)
-        if entry.get("run_receipt_id") == receipt_id
-    ]
+    matches: list[Path] = []
+    for path in (root / "runs").glob("*/receipts/*.json"):
+        receipt = _verify_run_receipt(
+            _load_json_object(path, "RUN_RECEIPT_TAMPERED")
+        )
+        if receipt.get("run_receipt_id") == receipt_id:
+            matches.append(path)
     if len(matches) != 1:
         raise PipelineError(
             "LINEAGE_NOT_FOUND", f"Found {len(matches)} matching run receipts"
@@ -560,6 +562,7 @@ def _pipeline_config(
                 "consumer": _text(requested, "consumer"),
                 "split": "train",
                 "run_id": _text(requested, "run_id"),
+                "run_dir": _text(requested, "run_dir"),
             }
         ]
     return {

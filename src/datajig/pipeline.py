@@ -339,7 +339,9 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
     consumption: list[dict[str, str]] = []
     for index, raw_consumer in enumerate(raw_consumption):
         consumer = _object(
-            raw_consumer, frozenset({"consumer", "split", "run_id"}), f"consumption_plan[{index}]"
+            raw_consumer,
+            frozenset({"consumer", "split", "run_id", "run_dir"}),
+            f"consumption_plan[{index}]",
         )
         consumer_name = _required_text(consumer, "consumer", f"consumption_plan[{index}]")
         split = _required_text(consumer, "split", f"consumption_plan[{index}]")
@@ -350,8 +352,32 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
             _fail(f"consumption split {split!r} is not exported")
         if _RUN_ID.fullmatch(run_id) is None:
             _fail("run_id must be 1..128 characters from [A-Za-z0-9._:-]")
-        consumption.append({"consumer": consumer_name, "split": split, "run_id": run_id})
-    consumption.sort(key=lambda item: (item["split"], item["consumer"], item["run_id"]))
+        normalized_consumer = {
+            "consumer": consumer_name,
+            "split": split,
+            "run_id": run_id,
+        }
+        if "run_dir" in consumer:
+            run_dir = _logical_path(
+                _required_text(consumer, "run_dir", f"consumption_plan[{index}]"),
+                f"consumption_plan[{index}].run_dir",
+            )
+            _validate_path_components(
+                config_path.parent,
+                run_dir,
+                f"consumption_plan[{index}].run_dir",
+                planning=True,
+            )
+            normalized_consumer["run_dir"] = run_dir
+        consumption.append(normalized_consumer)
+    consumption.sort(
+        key=lambda item: (
+            item["split"],
+            item["consumer"],
+            item["run_id"],
+            item.get("run_dir", ""),
+        )
+    )
 
     run_binding: dict[str, str] | None = None
     if data.get("run") is not None:
@@ -1571,7 +1597,9 @@ def _prepare_delivery(
     for split in splits:
         arguments.extend(("--split", str(split)))
     exported = _run_native_artifact(arguments)
-    consumption_results = _create_consumption_plans(plan, delivery_stage)
+    consumption_results = _create_consumption_plans(
+        plan, delivery_stage, paths["config_base"], paths["delivery"]
+    )
     artifacts.update(
         {
             "delivery_stage": str(delivery_stage),
@@ -1758,7 +1786,10 @@ def _build_delivery_receipt(
 
 
 def _create_consumption_plans(
-    plan: Mapping[str, object], delivery: Path
+    plan: Mapping[str, object],
+    delivery: Path,
+    config_base: Path,
+    published_delivery: Path,
 ) -> list[dict[str, object]]:
     manifest = delivery / "bundle" / "datajig.bundle.json"
     results: list[dict[str, object]] = []
@@ -1766,7 +1797,12 @@ def _create_consumption_plans(
     assert isinstance(raw_consumption, list)
     for index, raw in enumerate(raw_consumption):
         assert isinstance(raw, dict)
-        output = delivery / "runs" / f"{index:03d}"
+        requested_run_dir = raw.get("run_dir")
+        output = (
+            _resolve_logical(config_base, requested_run_dir)
+            if isinstance(requested_run_dir, str)
+            else delivery / "runs" / f"{index:03d}"
+        )
         plan_output = delivery / "consumption" / f"{index:03d}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         plan_output.parent.mkdir(parents=True, exist_ok=True)
@@ -1798,6 +1834,8 @@ def _create_consumption_plans(
                     str(output),
                     "--plan",
                     str(plan_output),
+                    "--published-manifest",
+                    str(published_delivery / "bundle" / "datajig.bundle.json"),
                 ]
             )
         results.append(

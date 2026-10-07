@@ -117,6 +117,23 @@ class RunM2JourneyTests(DataJigCliTestCase):
         self.assertEqual("pytorch", artifact["consumption_plans"][0]["consumer"])
         self.assertEqual("training-001", artifact["consumption_plans"][0]["run_id"])
         self.assertTrue(artifact["consumption_plans"][0]["plan_id"].startswith("consume_"))
+        consumption_plan = json.loads(
+            (self.root / "delivery/consumption/000.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            str(self.root / "runs/training-001"), consumption_plan["run_dir"]
+        )
+        verified = self.run_cli(
+            "consume-info",
+            self.root / "delivery/consumption/000.json",
+            "--verify",
+            "--accept-plan",
+            artifact["consumption_plans"][0]["plan_id"],
+        ).payload["artifact"]
+        self.assertEqual(
+            artifact["consumption_plans"][0]["plan_id"],
+            verified["consumption_plan_id"],
+        )
 
     def test_strict_run_stops_at_the_plan_boundary(self) -> None:
         source = self.root / "rows.csv"

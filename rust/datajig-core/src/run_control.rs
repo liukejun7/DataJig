@@ -675,6 +675,26 @@ pub fn classify_run_output(
     Ok(authorize_run(AuthorizationLevel::Fatal, false))
 }
 
+pub fn validate_run_source_output_separation(
+    source: &Path,
+    output: &Path,
+) -> Result<(), RunControlError> {
+    validate_relative_path(source, "source")?;
+    validate_relative_path(output, "output")?;
+    if source.starts_with(output) || output.starts_with(source) {
+        return Err(RunControlError::new(
+            "RUN_PATH_OVERLAP",
+            format!(
+                "source {} and output {} must not contain one another",
+                source.display(),
+                output.display()
+            ),
+            "choose a delivery path outside the source tree",
+        ));
+    }
+    Ok(())
+}
+
 fn is_committed_datajig_delivery(root: &Path, output: &Path, intent_id: &str) -> bool {
     let Ok(output_metadata) = fs::symlink_metadata(output) else {
         return false;

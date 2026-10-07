@@ -632,7 +632,7 @@ fn pipeline_config_artifact() -> Value {
             "validate": {"quality_policy": {"inline": {}}},
             "export": {"split": ["train=7", "val=2", "test=1"]},
             "consumption_plan": [
-                {"consumer": "pytorch", "split": "train", "run_id": "run-001"}
+                {"consumer": "pytorch", "split": "train", "run_id": "run-001", "run_dir": "runs/run-001"}
             ]
         }
     })
@@ -703,7 +703,8 @@ fn pipeline_config_schema() -> Value {
         json!({
             "consumer":{"enum":["python","pytorch","huggingface"]},
             "split":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"},
-            "run_id":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"}
+            "run_id":{"type":"string","pattern":"^[A-Za-z0-9._:-]{1,128}$"},
+            "run_dir":logical_path()
         }),
     );
     let run = strict_object(

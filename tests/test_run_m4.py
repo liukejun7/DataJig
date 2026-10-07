@@ -83,9 +83,9 @@ class RunM4ObservabilityTests(DataJigCliTestCase):
         self.assertEqual(completed["attempt_id"], status["recent_run"]["attempt_id"])
         self.assertEqual([], status["recoverable_runs"])
         self.assertEqual(0, status["pending_run_gc"])
-        text_status = self.run_cli("status", "--state", state, "--format", "text").payload[
-            "artifact"
-        ]
+        text_status = self.run_cli(
+            "status", f"--state={state}", "--format=text"
+        ).payload["artifact"]
         self.assertIn("DataJig workspace", text_status["text"])
         self.assertIn(completed["run_receipt_id"], text_status["text"])
 

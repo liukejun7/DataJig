@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 
 from datajig.pipeline import PipelineError
-from datajig.run import _verify_run_provider_binding
+from datajig.run import _run_receipt_identity, _verify_run_provider_binding
 from tests.cli_harness import DataJigCliTestCase
 
 
@@ -45,6 +46,44 @@ class RunSecurityRegressionTests(DataJigCliTestCase):
         failed = self.run_cli("status", "--state", state, expected_returncode=2)
 
         self.assertEqual("RUN_RECEIPT_TAMPERED", failed.payload["error"]["code"])
+
+    def test_lineage_resolves_receipts_older_than_the_bounded_status_index(self) -> None:
+        source = self.root / "rows.csv"
+        source.write_text("id,value\na,1\n", encoding="utf-8")
+        completed = self.run_cli(
+            "run",
+            "from rows.csv source-id-field id export id-field id",
+            "--output",
+            "delivery",
+        ).payload["artifact"]
+        old_receipt_path = self.root / completed["run_receipt_path"]
+        old_receipt = json.loads(old_receipt_path.read_text(encoding="utf-8"))
+        os.utime(old_receipt_path, ns=(1, 1))
+        receipts = old_receipt_path.parent
+        for index in range(64):
+            synthetic = dict(old_receipt)
+            synthetic["attempt_id"] = f"attempt_{index + 1:064x}"
+            basis = {
+                key: value for key, value in synthetic.items() if key != "run_receipt_id"
+            }
+            synthetic["run_receipt_id"] = _run_receipt_identity(basis)
+            path = receipts / f"synthetic-{index:02d}.json"
+            path.write_text(json.dumps(synthetic), encoding="utf-8")
+            os.utime(path, ns=(index + 2, index + 2))
+        state = (
+            self.root
+            / ".datajig"
+            / "runs"
+            / completed["intent_id"]
+            / "workspace"
+            / "state"
+        )
+
+        resolved = self.run_cli(
+            "lineage", completed["run_receipt_id"], "--state", state
+        ).payload["artifact"]
+
+        self.assertEqual(completed["run_receipt_id"], resolved["run_receipt_id"])
 
 
 if __name__ == "__main__":
