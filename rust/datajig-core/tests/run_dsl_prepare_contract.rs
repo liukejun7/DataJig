@@ -164,6 +164,22 @@ fn unquoted_string_scalars_are_rejected_with_a_fix_example() {
 }
 
 #[test]
+fn url_string_scalars_are_data_not_remote_sources() {
+    let compiled = compile_dsl(
+        "from input.csv source-id-field id prepare fill homepage with 'https://example.test' export id-field id",
+    )
+    .unwrap();
+
+    assert_eq!(
+        compiled.ast.prepare.steps[0],
+        PrepareStepAst::FillMissing {
+            field: "homepage".into(),
+            value: json!("https://example.test"),
+        }
+    );
+}
+
+#[test]
 fn explicit_source_identity_is_preserved_by_select() {
     let compiled = compile_dsl(
         "from input.csv source-id-field id prepare select name,score export id-field id",

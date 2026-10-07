@@ -6,6 +6,7 @@ use super::ast::{
     SourceIdMode, TrainingSplitsAst, canonicalize_run_task, sql_identifier,
 };
 use super::lexer::{Token, TokenKind, lex};
+use crate::{TransformLimits, validate_transform_query};
 use serde_json::{Number, Value};
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
@@ -14,7 +15,6 @@ const RESERVED_SOURCE_ID: &str = "_datajig_source_id";
 
 pub fn compile_dsl(input: &str) -> Result<CompiledRunTask, RunDslError> {
     let tokens = lex(input)?;
-    reject_known_unsupported(&tokens)?;
     Parser::new(tokens, input.len()).parse()
 }
 
@@ -173,6 +173,28 @@ impl Parser {
             ),
             generated: true,
         });
+        if let RunTransformAst::Sql {
+            sql,
+            generated: false,
+        } = &transform
+        {
+            let aliases = BTreeSet::from(["source".to_owned()]);
+            validate_transform_query(sql, &[], &aliases, &id_field, &TransformLimits::v1())
+                .map_err(|error| {
+                    let position = self
+                        .tokens
+                        .iter()
+                        .find(|token| matches!(&token.kind, TokenKind::Backtick(value) if value.trim() == sql))
+                        .map_or(self.end_position, |token| token.start);
+                    RunDslError::new(
+                        "INVALID_DSL",
+                        "transform.sql",
+                        position,
+                        error.to_string(),
+                        "provide one policy-compliant SELECT query over the `source` alias with deterministic ORDER BY ending in the final id-field",
+                    )
+                })?;
+        }
         let ast = RunTaskAst {
             namespace: "datajig".into(),
             kind: "run_task".into(),
@@ -855,19 +877,32 @@ fn parse_number(value: &str) -> Option<Number> {
     Number::from_f64(value.parse::<f64>().ok()?)
 }
 
-fn reject_known_unsupported(tokens: &[Token]) -> Result<(), RunDslError> {
-    let unsupported = tokens.iter().find(|token| {
-        token
-            .value()
-            .is_some_and(|value| value.starts_with("http://") || value.starts_with("https://"))
-    });
-    if let Some(token) = unsupported {
+fn validate_path(path: &str, position: usize) -> Result<(), RunDslError> {
+    if path.starts_with("http://") || path.starts_with("https://") {
         return Err(RunDslError::new(
             "UNSUPPORTED_TASK",
             "task",
-            token.start,
+            position,
             "the task uses a source or control-flow feature outside DataJig DSL v1",
             "use one local source and a linear from/prepare/transform/export task",
+        ));
+    }
+    let parsed = Path::new(path);
+    if path.is_empty()
+        || parsed == Path::new(".")
+        || parsed.is_absolute()
+        || parsed
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(RunDslError::new(
+            "INVALID_DSL",
+            "source.path",
+            position,
+            format!(
+                "source path `{path}` must name a child of the current working directory and cannot contain `..`"
+            ),
+            "use a source file or directory below the current working directory",
         ));
     }
     Ok(())
@@ -896,28 +931,6 @@ fn infer_format(path: &str) -> Option<SourceFormat> {
         "parquet" => Some(SourceFormat::Parquet),
         _ => None,
     }
-}
-
-fn validate_path(path: &str, position: usize) -> Result<(), RunDslError> {
-    let parsed = Path::new(path);
-    if path.is_empty()
-        || parsed == Path::new(".")
-        || parsed.is_absolute()
-        || parsed
-            .components()
-            .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(RunDslError::new(
-            "INVALID_DSL",
-            "source.path",
-            position,
-            format!(
-                "source path `{path}` must name a child of the current working directory and cannot contain `..`"
-            ),
-            "use a source file or directory below the current working directory",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_splits(train: u16, val: u16, test: u16, position: usize) -> Result<(), RunDslError> {

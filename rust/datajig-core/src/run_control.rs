@@ -738,6 +738,37 @@ fn validate_run_consumption_paths(
     Ok(())
 }
 
+pub fn validate_run_consumption_target(
+    root: &Path,
+    consumption: Option<&RunConsumptionBinding>,
+) -> Result<(), RunControlError> {
+    let Some(consumption) = consumption else {
+        return Ok(());
+    };
+    let run_dir = Path::new(&consumption.run_dir);
+    validate_run_public_path(run_dir, "run_dir")?;
+    let target = root.join(run_dir);
+    match fs::symlink_metadata(&target) {
+        Ok(_) => Err(RunControlError::new(
+            "RUN_CONSUMPTION_CONFLICT",
+            format!(
+                "consumption run directory {} must not already exist",
+                run_dir.display()
+            ),
+            "choose a new --run-dir or remove the unneeded existing path before creating a new plan",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(RunControlError::new(
+            "RUN_PATH_INVALID",
+            format!(
+                "cannot inspect consumption run directory {}: {error}",
+                run_dir.display()
+            ),
+            "choose an accessible new --run-dir below the current working directory",
+        )),
+    }
+}
+
 fn relative_path_comparison_key(path: &Path, field: &str) -> Result<Vec<String>, RunControlError> {
     path.components()
         .filter(|component| !matches!(component, Component::CurDir))

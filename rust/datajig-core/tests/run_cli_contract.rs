@@ -280,6 +280,45 @@ fn consumption_run_directory_must_not_overlap_delivery() {
 }
 
 #[test]
+fn consumption_run_directory_must_be_new_at_plan_and_resume_time() {
+    let root = TempDir::new();
+    fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+    fs::create_dir_all(root.path().join("runs/training-001")).unwrap();
+    let args = [
+        "run",
+        "from rows.csv source-id-field id export id-field id",
+        "--strict",
+        "--consume",
+        "--consumer",
+        "pytorch",
+        "--run-id",
+        "training-001",
+        "--run-dir",
+        "runs/training-001",
+    ];
+
+    let existing_at_plan = run(root.path(), &args);
+    assert!(!existing_at_plan.status.success());
+    let error: Value = serde_json::from_slice(&existing_at_plan.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RUN_CONSUMPTION_CONFLICT");
+    assert!(!root.path().join(".datajig").exists());
+
+    fs::remove_dir(root.path().join("runs/training-001")).unwrap();
+    let planned = stdout_json(&run(root.path(), &args));
+    let attempt = planned["artifact"]["attempt_id"].as_str().unwrap();
+    let plan = planned["artifact"]["plan_id"].as_str().unwrap();
+    fs::create_dir(root.path().join("runs/training-001")).unwrap();
+
+    let existing_at_resume = run(
+        root.path(),
+        &["run", "--resume", attempt, "--accept-plan", plan],
+    );
+    assert!(!existing_at_resume.status.success());
+    let error: Value = serde_json::from_slice(&existing_at_resume.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RUN_CONSUMPTION_CONFLICT");
+}
+
+#[test]
 fn canonically_equivalent_unicode_paths_cannot_bypass_source_delivery_separation() {
     for (source, delivery) in [("café", "cafe\u{301}/delivery"), ("σ", "ς/delivery")] {
         let root = TempDir::new();

@@ -55,6 +55,18 @@ fn explicit_transform_keeps_backtick_sql_and_uses_source_alias() {
 }
 
 #[test]
+fn explicit_transform_rejects_sql_that_execution_policy_would_deny() {
+    let task = "from rows.csv source-id-field id transform `DELETE FROM source` export id-field id";
+    let error = compile_dsl(task).unwrap_err();
+
+    assert_eq!(error.code, "INVALID_DSL");
+    assert_eq!(error.location, "transform.sql");
+    assert_eq!(error.position, task.find('`').unwrap());
+    assert!(error.message.contains("only SELECT is allowed"));
+    assert!(error.remediation.contains("SELECT"));
+}
+
+#[test]
 fn single_field_aggregate_compiles_all_functions_and_defaults_final_id() {
     let compiled = compile_dsl(
         "from rows.csv source-id-field auto aggregate by UserID \

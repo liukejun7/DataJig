@@ -31,7 +31,7 @@ use datajig_core::{
     resolve_change_selector, resolve_optional_changeset_context, resolve_run_source_format,
     revision_log, run_tutorial, seal_changeset, seal_changeset_detached, seal_workspace,
     stage_changeset, status_changeset, status_workspace, undo_jsonl_patch,
-    validate_run_source_output_separation, write_agent_skill,
+    validate_run_consumption_target, validate_run_source_output_separation, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -1184,6 +1184,8 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 let authorization = classify_run_output(&root, &output, &compiled.intent_id)
                     .map_err(run_control_command_error)?;
                 let consumption = run_consumption_binding(consume, consumer, run_id, run_dir)?;
+                validate_run_consumption_target(&root, consumption.as_ref())
+                    .map_err(run_control_command_error)?;
                 let provider_identity: TransformProviderIdentity = serde_json::from_str(
                     provider_identity.as_deref().ok_or_else(|| {
                         (
@@ -2658,6 +2660,8 @@ fn reverify_resumed_run(
     let source = PathBuf::from(&plan.canonical_ast.source.path);
     validate_run_source_output_separation(&source, Path::new(&plan.binding.output))
         .map_err(run_control_command_error)?;
+    validate_run_consumption_target(root, plan.binding.consumption.as_ref())
+        .map_err(run_control_command_error)?;
     let current_source =
         fingerprint_run_source(root, &source).map_err(run_control_command_error)?;
     if current_source != plan.binding.source_content_id {
@@ -2709,6 +2713,7 @@ fn run_control_command_error(error: RunControlError) -> CommandError {
         "SOURCE_FORMAT_UNSUPPORTED" => "SOURCE_FORMAT_UNSUPPORTED",
         "RUN_PATH_INVALID" => "RUN_PATH_INVALID",
         "RUN_PATH_OVERLAP" => "RUN_PATH_OVERLAP",
+        "RUN_CONSUMPTION_CONFLICT" => "RUN_CONSUMPTION_CONFLICT",
         "RUN_PLAN_READ_FAILED" => "RUN_PLAN_READ_FAILED",
         "RUN_PLAN_WRITE_FAILED" => "RUN_PLAN_WRITE_FAILED",
         _ => "INVALID_ARGUMENT",
