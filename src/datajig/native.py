@@ -86,9 +86,7 @@ def run_native(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     requests_help = any(item in {"-h", "--help"} for item in effective_args[1:])
     if command == "transform-plan" and not requests_help:
         _verify_transform_provider()
-    resumes_run = any(
-        item == "--resume" or item.startswith("--resume=") for item in effective_args[1:]
-    )
+    resumes_run = has_cli_option(effective_args[1:], "--resume")
     if command == "run" and not requests_help and not resumes_run:
         provider = _probe_transform_provider_identity()
         effective_args.extend(
@@ -111,6 +109,10 @@ def run_native(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
             "the Rust backend could not be started; install datajig-core or set "
             "DATAJIG_NATIVE to an executable"
         ) from exc
+
+
+def has_cli_option(args: Sequence[str], option: str) -> bool:
+    return any(item == option or item.startswith(f"{option}=") for item in args)
 
 
 def _resolve_native_binary() -> Path:

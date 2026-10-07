@@ -13,6 +13,7 @@ from datajig.native import (
     NATIVE_COMMANDS,
     NativeBackendUnavailableError,
     TransformProviderUnavailableError,
+    has_cli_option,
     run_native,
 )
 
@@ -726,7 +727,9 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
                 from datajig.run import execute_accepted_run
 
                 payload = execute_accepted_run(
-                    payload, Path.cwd(), allow_recovery="--resume" in raw_args
+                    payload,
+                    Path.cwd(),
+                    allow_recovery=has_cli_option(raw_args[1:], "--resume"),
                 )
                 stdout = (
                     json.dumps(

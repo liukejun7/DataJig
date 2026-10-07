@@ -177,10 +177,8 @@ class RunM2JourneyTests(DataJigCliTestCase):
         ).payload["artifact"]
         resume = (
             "run",
-            "--resume",
-            planned["attempt_id"],
-            "--accept-plan",
-            planned["plan_id"],
+            f"--resume={planned['attempt_id']}",
+            f"--accept-plan={planned['plan_id']}",
         )
         interrupted = self.run_cli(
             *resume,
