@@ -348,6 +348,106 @@ class DuckDbProviderTest(unittest.TestCase):
                 candidate.read_text(encoding="utf-8"),
             )
 
+    def test_query_conversion_failure_preserves_bounded_duckdb_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "events.csv"
+            source.write_text("id,price\na,10\nid,price\nb,20\n", encoding="utf-8")
+            temp = root / "temp"
+            temp.mkdir()
+            candidate = root / "candidate.jsonl"
+            identity = provider._probe()
+
+            response = provider._handle_request(
+                {
+                    "protocol": "datajig.transform-provider.v1",
+                    "protocol_version": 1,
+                    "correlation_id": "corr-conversion",
+                    "operation": "execute",
+                    "expected_provider": identity,
+                    "sources": [_source("events", source, "csv", 3)],
+                    "sql": (
+                        "SELECT id, CAST(price AS BIGINT) AS price "
+                        "FROM events ORDER BY id"
+                    ),
+                    "parameters": [],
+                    "id_field": "id",
+                    "candidate_path": str(candidate),
+                    "temp_directory": str(temp),
+                    "limits": _limits(),
+                    "ast_policy_digest": "policy_test",
+                }
+            )
+
+            self.assertEqual("error", response["status"])
+            self.assertEqual("QUERY_EXECUTION_FAILED", response["error"]["code"])
+            self.assertIn("Conversion Error", response["error"]["message"])
+            self.assertIn("price", response["error"]["message"])
+            self.assertIn("INT64", response["error"]["message"])
+            self.assertNotIn("LINE 1", response["error"]["message"])
+            self.assertLessEqual(len(response["error"]["message"].encode("utf-8")), 1024)
+            self.assertFalse(candidate.exists())
+
+    def test_query_diagnostic_redacts_sql_string_literals(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "events.csv"
+            source.write_text("id,price\na,10\n", encoding="utf-8")
+            temp = root / "temp"
+            temp.mkdir()
+            candidate = root / "candidate.jsonl"
+            identity = provider._probe()
+
+            response = provider._handle_request(
+                {
+                    "protocol": "datajig.transform-provider.v1",
+                    "protocol_version": 1,
+                    "correlation_id": "corr-secret-literal",
+                    "operation": "execute",
+                    "expected_provider": identity,
+                    "sources": [_source("events", source, "csv", 1)],
+                    "sql": (
+                        "SELECT id, CAST('SQL_SECRET_ABC' AS BIGINT) AS price "
+                        "FROM events ORDER BY id"
+                    ),
+                    "parameters": [],
+                    "id_field": "id",
+                    "candidate_path": str(candidate),
+                    "temp_directory": str(temp),
+                    "limits": _limits(),
+                    "ast_policy_digest": "policy_test",
+                }
+            )
+
+            self.assertEqual("QUERY_EXECUTION_FAILED", response["error"]["code"])
+            self.assertNotIn("SQL_SECRET_ABC", response["error"]["message"])
+            self.assertIn("<redacted-sql-literal>", response["error"]["message"])
+            self.assertIn("INT64", response["error"]["message"])
+            self.assertFalse(candidate.exists())
+
+    def test_query_diagnostic_redacts_multiline_literals_and_bound_strings(self) -> None:
+        cases = (
+            (
+                RuntimeError("Conversion Error: Could not convert 'SQL_SECRET\nABC' to INT64"),
+                "SELECT CAST('SQL_SECRET\nABC' AS BIGINT)",
+                [],
+                ("SQL_SECRET", "ABC"),
+            ),
+            (
+                RuntimeError("Conversion Error: Could not convert 'BOUND_SECRET ABC' to INT64"),
+                "SELECT CAST(? AS BIGINT)",
+                ["BOUND_SECRET\nABC"],
+                ("BOUND_SECRET", "ABC"),
+            ),
+        )
+
+        for error, sql, parameters, forbidden in cases:
+            with self.subTest(sql=sql):
+                diagnostic = provider._query_execution_error(error, sql, parameters)
+                self.assertIn("<redacted-sql-literal>", diagnostic.message)
+                for value in forbidden:
+                    self.assertNotIn(value, diagnostic.message)
+
     def test_missing_duckdb_is_a_structured_provider_error(self) -> None:
         with mock.patch.object(
             provider, "_import_duckdb", side_effect=ModuleNotFoundError("No module named duckdb")

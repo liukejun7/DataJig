@@ -27,6 +27,7 @@ SOURCE_LOADER_POLICY_VERSION = 2
 SQL_POLICY_VERSION = 1
 MAX_REQUEST_BYTES = 2 * 1024 * 1024
 _ALIAS = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_SQL_STRING_LITERAL = re.compile(r"'(?:''|[^'])*'")
 _LIMIT_KEYS = frozenset(
     {
         "inputs",
@@ -428,6 +429,54 @@ def _stream_result(
     return {"schema": schema, "rows": rows, "bytes": written, "candidate_complete": True}
 
 
+def _query_execution_error(
+    error: Exception, sql: str, parameters: Sequence[object]
+) -> ProviderError:
+    sensitive_values = {
+        match.group(0)[1:-1].replace("''", "'")
+        for match in _SQL_STRING_LITERAL.finditer(sql)
+    }
+    sensitive_values.update(value for value in parameters if isinstance(value, str))
+    raw_diagnostic = str(error)
+    for value in sorted(sensitive_values, key=len, reverse=True):
+        if value:
+            raw_diagnostic = raw_diagnostic.replace(value, "<redacted-sql-literal>")
+    diagnostic = raw_diagnostic.split("\n\n", 1)[0]
+    diagnostic = " ".join(
+        line.strip()
+        for line in diagnostic.splitlines()
+        if line.strip() and not line.lstrip().startswith(("LINE ", "^"))
+    )
+    diagnostic = "".join(
+        character if ord(character) >= 32 else " " for character in diagnostic
+    ).strip()
+    for value in sorted(sensitive_values, key=len, reverse=True):
+        normalized = " ".join(part.strip() for part in value.splitlines() if part.strip())
+        normalized = "".join(
+            character if ord(character) >= 32 else " " for character in normalized
+        ).strip()
+        if normalized:
+            diagnostic = diagnostic.replace(normalized, "<redacted-sql-literal>")
+    if not diagnostic:
+        diagnostic = type(error).__name__
+    message = _bounded_utf8(f"DuckDB query failed: {diagnostic}", 1024)
+    return ProviderError(
+        "QUERY_EXECUTION_FAILED",
+        message,
+        "Inspect source values and explicit casts; repeated CSV headers inside the data are "
+        "records, not headers. Correct the data or use TRY_CAST when nulls are intentional.",
+    )
+
+
+def _bounded_utf8(value: str, maximum: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= maximum:
+        return value
+    return encoded[: maximum - len("…".encode())].decode(
+        "utf-8", errors="ignore"
+    ) + "…"
+
+
 def _handle_request(raw_request: object) -> dict[str, object]:
     correlation_id = "unknown"
     try:
@@ -498,15 +547,23 @@ def _handle_request(raw_request: object) -> dict[str, object]:
             _configure_runtime(connection, temp_directory, limits["duckdb_memory_bytes"])
             _load_sources(connection, request)
             _seal_lockdown(connection)
-            cursor = connection.execute(sql, parameters)
-            result = _stream_result(
-                cursor,
-                candidate,
-                limits["fetch_batch_rows"],
-                max_rows=limits["output_rows"],
-                max_bytes=limits["output_bytes"],
-                max_fields=limits["output_fields"],
-            )
+            try:
+                cursor = connection.execute(sql, parameters)
+                result = _stream_result(
+                    cursor,
+                    candidate,
+                    limits["fetch_batch_rows"],
+                    max_rows=limits["output_rows"],
+                    max_bytes=limits["output_bytes"],
+                    max_fields=limits["output_fields"],
+                )
+            except ProviderError:
+                raise
+            except Exception as error:
+                candidate.unlink(missing_ok=True)
+                if type(error).__module__.partition(".")[0].lstrip("_") != "duckdb":
+                    raise
+                raise _query_execution_error(error, sql, parameters) from error
         finally:
             connection.close()
         id_field = _text(request.get("id_field"), "ID field")

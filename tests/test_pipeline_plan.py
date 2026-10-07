@@ -176,7 +176,38 @@ class PipelinePlanTests(DataJigCliTestCase):
             plan_path,
         )
         self.assertIn("unknown", result.payload["error"]["message"].lower())
+        self.assertIn("allowed fields:", result.payload["error"]["message"])
+        self.assertIn("inputs", result.payload["error"]["message"])
+        self.assertIn("transform", result.payload["error"]["message"])
+        self.assertIn("consumption_plan", result.payload["error"]["message"])
+        self.assertEqual(
+            [
+                {"command": "artifact-schema", "args": ["pipeline-config"]},
+                {"command": "pipeline", "args": ["plan", "--help"]},
+            ],
+            result.payload["next_actions"],
+        )
         self.assertEqual("existing", plan_path.read_text(encoding="utf-8"))
+
+    def test_published_pipeline_config_example_is_executable(self) -> None:
+        project = self.root / "published-example"
+        (project / "data").mkdir(parents=True)
+        (project / "data" / "events.csv").write_text(
+            "user_id,amount\na,1\nb,2\na,3\n", encoding="utf-8"
+        )
+        contract = self.run_cli("artifact-schema", "pipeline-config").payload["artifact"]
+        config = project / "pipeline.json"
+        config.write_text(json.dumps(contract["example"]), encoding="utf-8")
+        plan_path = project / "plan.json"
+
+        planned = self.run_cli(
+            "pipeline", "plan", "--config", config, "--plan", plan_path
+        ).payload["artifact"]
+
+        self.assertEqual("pipeline-config", contract["name"])
+        self.assertEqual(False, contract["schema"]["additionalProperties"])
+        self.assertTrue(planned["pipeline_id"].startswith("pipe_"))
+        self.assertTrue(plan_path.is_file())
 
     def test_input_must_be_single_regular_file_and_within_limits(self) -> None:
         project = self.root / "project"

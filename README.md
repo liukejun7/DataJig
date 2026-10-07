@@ -38,7 +38,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.8.2` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.8.3` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -97,7 +97,7 @@ inputs:
   - {alias: events, path: data/events.csv, format: csv}
 transform:
   sql: |
-    SELECT user_id AS id, SUM(CAST(amount AS INTEGER)) AS total
+    SELECT user_id AS id, CAST(SUM(CAST(amount AS INTEGER)) AS BIGINT) AS total
     FROM events GROUP BY user_id ORDER BY id
   id_field: id
   params: []
@@ -111,6 +111,7 @@ consumption_plan:
 Plan, review, and authorize the exact effect:
 
 ```bash
+datajig artifact-schema pipeline-config
 datajig pipeline plan --config pipeline.yaml --plan pipeline-plan.json
 datajig pipeline apply pipeline-plan.json --accept-plan pipe_...
 datajig pipeline info deliveries/user-agg-train/pipeline-receipt.json --verify
@@ -129,6 +130,11 @@ ordinary reruns never guess. Identical transformed content is a no-op revision
 but still produces the requested bundle, consumer plans, and `piped_...`
 receipt. Use `--config pipeline.yaml --auto-accept` only when intentionally
 skipping separate plan review.
+
+`lineage` currently resolves committed pipeline receipts and their pipeline,
+revision, bundle, or consumption-plan identities. For an atomic manual workflow,
+inspect its verified transform receipt and workspace `log` separately; a bare
+manual `rev_...` is intentionally not treated as a pipeline lineage root.
 
 ## One evidence chain, end to end
 

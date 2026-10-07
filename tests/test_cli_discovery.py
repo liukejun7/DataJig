@@ -38,6 +38,20 @@ class CliDiscoveryTests(unittest.TestCase):
             timeout=30,
         )
 
+    def run_nested_help(self, *commands: str) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        environment["DATAJIG_NATIVE"] = str(self.native)
+        return subprocess.run(
+            ("python", "-m", "datajig.cli", *commands, "--help"),
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
     def test_native_help_survives_the_python_entrypoint(self) -> None:
         check = self.run_help("check")
         self.assertEqual(0, check.returncode, check.stderr)
@@ -75,6 +89,16 @@ class CliDiscoveryTests(unittest.TestCase):
             "prepare/import -> transform -> version -> review/seal -> export -> consume",
             completed.stdout,
         )
+
+    def test_pipeline_plan_help_publishes_a_minimal_config(self) -> None:
+        completed = self.run_nested_help("pipeline", "plan")
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("datajig artifact-schema pipeline-config", completed.stdout)
+        self.assertIn("inputs:", completed.stdout)
+        self.assertIn("transform:", completed.stdout)
+        self.assertIn("consumption_plan:", completed.stdout)
+        self.assertIn("delivery.output must be a relative path", completed.stdout)
 
     def test_capabilities_publish_python_pipeline_contract(self) -> None:
         environment = os.environ.copy()

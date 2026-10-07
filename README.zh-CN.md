@@ -24,7 +24,7 @@ raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → �
 如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
 会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.8.2` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.8.3` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## DataJig 在技术栈中的位置
 
@@ -65,6 +65,7 @@ python -m pip install 'datajig[duckdb]'
 0.8 把 transform、版本、校验、导出和消费计划编排成一个 Agent 可安全驱动的事务：
 
 ```bash
+datajig artifact-schema pipeline-config
 datajig pipeline plan --config pipeline.yaml --plan pipeline-plan.json
 datajig pipeline apply pipeline-plan.json --accept-plan pipe_...
 datajig pipeline info deliveries/train/pipeline-receipt.json --verify
@@ -79,6 +80,10 @@ datajig lineage pipe_... --state workspace/.datajig --format text
 符合所有权、dataset、base revision、manifest 与 HEAD 校验的更新可以复用固定
 delivery 路径；DataJig 会先探测目标文件系统，再执行原子目录交换并保留旧版备份，
 不提供非原子降级路径。
+
+`lineage` 当前以已提交的 Pipeline receipt，以及对应的 pipeline、revision、bundle 或
+consumption-plan 身份为入口。手动原子流程应分别检查 transform receipt 和 workspace
+`log`；单独的手动 `rev_...` 不会被当作 Pipeline lineage 根节点。
 
 ## 一条贯穿全程的证据链
 

@@ -162,6 +162,43 @@ fn published_training_consumption_artifacts_state_the_exact_claim() {
 }
 
 #[test]
+fn published_pipeline_config_exposes_the_complete_strict_shape() {
+    let document = artifact_schema("pipeline-config").expect("schema should resolve");
+    let schema = &document["schema"];
+    let example = &document["example"];
+
+    assert_eq!(false, schema["additionalProperties"]);
+    assert_eq!(
+        false,
+        schema["properties"]["pipeline"]["additionalProperties"]
+    );
+    assert_eq!(
+        false,
+        schema["properties"]["inputs"]["items"]["additionalProperties"]
+    );
+    assert_eq!(
+        false,
+        schema["properties"]["transform"]["additionalProperties"]
+    );
+    assert_eq!(
+        false,
+        schema["properties"]["delivery"]["additionalProperties"]
+    );
+    assert_eq!("data/events.csv", example["inputs"][0]["path"]);
+    assert_eq!("deliveries/user-agg-train", example["delivery"]["output"]);
+    assert_eq!(
+        65_536,
+        schema["properties"]["transform"]["properties"]["sql"]["x-datajig-max-utf8-bytes"]
+    );
+    assert!(
+        schema["properties"]["delivery"]["properties"]["output"]["pattern"]
+            .as_str()
+            .expect("relative path pattern")
+            .contains("^")
+    );
+}
+
+#[test]
 fn published_repository_integration_example_is_accepted_by_the_strict_parser() {
     let document = artifact_schema("repository-integration").expect("schema should resolve");
     let payload = serde_json::to_string(&document["example"]).expect("example should serialize");

@@ -49,7 +49,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pipeline_commands = pipeline_parser.add_subparsers(dest="pipeline_command", required=True)
     pipeline_plan = pipeline_commands.add_parser(
-        "plan", help="create a deterministic pipeline plan"
+        "plan",
+        help="create a deterministic pipeline plan",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Discover the complete machine-readable contract:
+  datajig artifact-schema pipeline-config
+
+Minimal config:
+  schema_version: 1
+  pipeline: {name: user-agg-train, provider: duckdb}
+  target: {dataset: prepared/training.jsonl, state: workspace/.datajig, mode: create}
+  delivery: {output: deliveries/user-agg-train}
+  inputs:
+    - {alias: events, path: data/events.csv, format: csv}
+  transform:
+    sql: SELECT user_id AS id FROM events ORDER BY id
+    id_field: id
+    params: []
+  export: {split: [train=7, val=2, test=1]}
+  consumption_plan:
+    - {consumer: pytorch, split: train, run_id: run-001}
+
+All target, input, policy, and delivery paths are resolved from the config directory;
+delivery.output must be a relative path. Data without a stable key should generate a
+deterministic id in transform SQL before DataJig versions it.""",
     )
     pipeline_plan.add_argument("--config", type=Path, required=True)
     pipeline_plan.add_argument("--plan", type=Path, required=True)
@@ -122,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         choices=(
             "jsonl-field-patch",
+            "pipeline-config",
             "prepare-recipe",
             "repository-integration",
             "subset-view",
@@ -591,12 +615,18 @@ def _print_pipeline_error(exc: object) -> None:
         "retryable": False,
     }
     error.update(exc.details)
+    next_actions = [{"command": "pipeline", "args": ["--help"]}]
+    if exc.code == "INVALID_PIPELINE_CONFIG":
+        next_actions = [
+            {"command": "artifact-schema", "args": ["pipeline-config"]},
+            {"command": "pipeline", "args": ["plan", "--help"]},
+        ]
     print(
         json.dumps(
             {
                 "agent_api_version": 1,
                 "error": error,
-                "next_actions": [{"command": "pipeline", "args": ["--help"]}],
+                "next_actions": next_actions,
             },
             ensure_ascii=False,
             sort_keys=True,

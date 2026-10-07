@@ -24,6 +24,7 @@ SUITES = {
     ),
     "transform-pipeline": (
         "tests.test_duckdb_provider",
+        "tests.test_end_to_end_journey",
         "tests.test_transform_cli",
         "tests.test_pipeline_plan",
         "tests.test_pipeline_apply",

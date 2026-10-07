@@ -19,8 +19,8 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
             (REPOSITORY_ROOT / "rust" / "datajig-core" / "Cargo.toml").read_text()
         )
 
-        self.assertEqual("0.8.2", metadata["project"]["version"])
-        self.assertEqual("0.8.2", rust_metadata["package"]["version"])
+        self.assertEqual("0.8.3", metadata["project"]["version"])
+        self.assertEqual("0.8.3", rust_metadata["package"]["version"])
         self.assertEqual("PYPI.md", metadata["project"]["readme"])
         self.assertEqual(
             [{"name": "Kejun Liu", "email": "liukj7@gmail.com"}],
