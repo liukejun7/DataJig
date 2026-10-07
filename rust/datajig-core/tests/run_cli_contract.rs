@@ -31,11 +31,20 @@ impl Drop for TempDir {
 }
 
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_datajig-core"))
-        .current_dir(root)
-        .args(args)
-        .output()
-        .unwrap()
+    let provider = datajig_core::TransformProviderIdentity::create(
+        "0.9.0".into(),
+        "1.5.6".into(),
+        "CPython".into(),
+        "3.12.0".into(),
+    )
+    .unwrap();
+    let serialized = serde_json::to_string(&provider).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_datajig-core"));
+    command.current_dir(root).args(args);
+    if args.first() == Some(&"run") && !args.contains(&"--resume") {
+        command.args(["--provider-identity", &serialized]);
+    }
+    command.output().unwrap()
 }
 
 fn stdout_json(output: &Output) -> Value {
@@ -96,7 +105,21 @@ fn environment_strict_mode_uses_the_same_two_phase_contract() {
     let output = Command::new(env!("CARGO_BIN_EXE_datajig-core"))
         .current_dir(root.path())
         .env("DATAJIG_STRICT", "1")
-        .args(["run", task])
+        .args([
+            "run",
+            task,
+            "--provider-identity",
+            &serde_json::to_string(
+                &datajig_core::TransformProviderIdentity::create(
+                    "0.9.0".into(),
+                    "1.5.6".into(),
+                    "CPython".into(),
+                    "3.12.0".into(),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        ])
         .output()
         .unwrap();
     let response = stdout_json(&output);

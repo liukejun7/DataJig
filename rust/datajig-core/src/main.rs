@@ -12,14 +12,15 @@ use datajig_core::{
     RunPlanArtifact, RunPlanBinding, Severity, StaleConsumptionInputError, StalePrepareInputError,
     TrainingExportConfig, TransformDriftError, TransformInputSpec, TransformNotAuthorizedError,
     TransformOutputError, TransformOutputErrorKind, TransformProviderExecutionError,
-    TransformProviderProtocolError, TransformProviderTimeoutError, TransformSourceFormat,
-    UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError, WorkspaceLock, WorkspaceStore,
-    agent_contract_id, apply_hf_import, apply_jsonl_patch, apply_prepare, artifact_schema,
-    artifact_schema_names, begin_changeset, check_changeset, check_repository, check_subset_view,
-    check_workspace, classify_run_output, command_catalog, command_descriptor, command_names,
-    compact_summary, compare_and_swap_workspace_head, compile_task, create_inventory,
-    create_review, create_run_plan, create_snapshot, diff_jsonl_records, diff_manifests,
-    draft_jsonl_patch, export_training_bundle_with_view_at_detached_revision,
+    TransformProviderIdentity, TransformProviderProtocolError, TransformProviderTimeoutError,
+    TransformSourceFormat, UndoNotFoundError, UnstagedChangesError, WorkspaceBusyError,
+    WorkspaceLock, WorkspaceStore, agent_contract_id, apply_hf_import, apply_jsonl_patch,
+    apply_prepare, artifact_schema, artifact_schema_names, begin_changeset, check_changeset,
+    check_repository, check_subset_view, check_workspace, classify_run_output, command_catalog,
+    command_descriptor, command_names, compact_summary, compare_and_swap_workspace_head,
+    compile_task, create_inventory, create_review, create_run_plan, create_snapshot,
+    diff_jsonl_records, diff_manifests, draft_jsonl_patch,
+    export_training_bundle_with_view_at_detached_revision,
     export_training_bundle_with_view_at_revision, fingerprint_run_source, get_finding,
     initialize_jsonl_workspace_with_receipt, initialize_workspace, inspect_jsonl, inspect_tabular,
     inspect_training_bundle_with_consumer, inspect_training_consumption, inspect_transform,
@@ -138,6 +139,9 @@ enum Command {
         /// Consumer run-state directory included in consumption identity.
         #[arg(long, requires = "consume")]
         run_dir: Option<PathBuf>,
+        /// Provider identity bound by the Python control-plane entrypoint.
+        #[arg(long, hide = true, conflicts_with = "resume")]
+        provider_identity: Option<String>,
     },
     /// Initialize a project-local last-good baseline for a dataset.
     #[command(
@@ -1146,6 +1150,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             consumer,
             run_id,
             run_dir,
+            provider_identity,
         } => {
             let root =
                 std::env::current_dir().map_err(|error| ("RUN_PATH_INVALID", 2, error.into()))?;
@@ -1173,9 +1178,28 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 let authorization = classify_run_output(&root, &output, &compiled.intent_id)
                     .map_err(run_control_command_error)?;
                 let consumption = run_consumption_binding(consume, consumer, run_id, run_dir)?;
+                let provider_identity: TransformProviderIdentity = serde_json::from_str(
+                    provider_identity.as_deref().ok_or_else(|| {
+                        (
+                            "PROVIDER_UNAVAILABLE",
+                            2,
+                            anyhow::anyhow!(
+                                "the run provider identity is not bound; install with pip install 'datajig[duckdb]' and invoke the datajig Python entrypoint"
+                            ),
+                        )
+                    })?,
+                )
+                .map_err(|error| {
+                    (
+                        "PROVIDER_INCOMPATIBLE",
+                        2,
+                        anyhow::anyhow!("invalid run provider identity: {error}"),
+                    )
+                })?;
                 let binding = RunPlanBinding {
                     source_content_id,
                     engine_version: format!("datajig-run-engine-v1/{}", env!("CARGO_PKG_VERSION")),
+                    provider_identity,
                     output: output_text.into(),
                     consumption,
                 };
@@ -2432,6 +2456,7 @@ fn validate_command_arguments(command: &Command) -> Result<(), CommandError> {
         consumer,
         run_id,
         run_dir,
+        provider_identity,
         ..
     } = command
     {
@@ -2441,6 +2466,7 @@ fn validate_command_arguments(command: &Command) -> Result<(), CommandError> {
                 || consumer.is_some()
                 || run_id.is_some()
                 || run_dir.is_some()
+                || provider_identity.is_some()
                 || output != Path::new("bundle"))
         {
             return Err((

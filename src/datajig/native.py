@@ -77,18 +77,27 @@ class TransformProviderUnavailableError(RuntimeError):
 
 def run_native(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     binary = _resolve_native_binary()
-    command = args[0] if args else ""
+    effective_args = list(args)
+    command = effective_args[0] if effective_args else ""
     native_environment = os.environ.copy()
     native_environment.pop("_DATAJIG_PROVIDER_PYTHON", None)
     if command in NATIVE_TRANSFORM_COMMANDS:
         native_environment["_DATAJIG_PROVIDER_PYTHON"] = os.path.abspath(sys.executable)
-    requests_help = any(item in {"-h", "--help"} for item in args[1:])
+    requests_help = any(item in {"-h", "--help"} for item in effective_args[1:])
     if command == "transform-plan" and not requests_help:
         _verify_transform_provider()
+    if command == "run" and not requests_help and "--resume" not in effective_args:
+        provider = _probe_transform_provider_identity()
+        effective_args.extend(
+            [
+                "--provider-identity",
+                json.dumps(provider, sort_keys=True, separators=(",", ":")),
+            ]
+        )
     try:
-        _verify_native(binary, args, native_environment)
+        _verify_native(binary, effective_args, native_environment)
         return subprocess.run(
-            [str(binary), *args],
+            [str(binary), *effective_args],
             check=False,
             capture_output=True,
             encoding="utf-8",
@@ -135,10 +144,14 @@ def _is_executable(path: Path) -> bool:
 
 
 def _verify_transform_provider() -> None:
+    _probe_transform_provider_identity()
+
+
+def _probe_transform_provider_identity() -> dict[str, object]:
     try:
         from datajig.providers.duckdb import ProviderError, _probe
 
-        _probe()
+        identity = _probe()
     except (ImportError, ModuleNotFoundError) as exc:
         raise TransformProviderUnavailableError(
             "DuckDB transform support is not installed. Install it with: "
@@ -148,6 +161,12 @@ def _verify_transform_provider() -> None:
         raise TransformProviderUnavailableError(
             f"{exc.message} {exc.remediation}", code=exc.code
         ) from exc
+    if not isinstance(identity, dict):
+        raise TransformProviderUnavailableError(
+            "DuckDB transform provider returned an invalid identity",
+            code="PROVIDER_INCOMPATIBLE",
+        )
+    return identity
 
 
 def _verify_native(

@@ -59,6 +59,7 @@ def execute_accepted_run(
         raise PipelineError("RUN_STATE_CORRUPT", "Accepted run workspace is missing")
 
     expected_source = _text(binding, "source_content_id")
+    expected_provider = _mapping(binding.get("provider_identity"), "binding.provider_identity")
     source_path = _text(_mapping(ast.get("source"), "source"), "path")
     _verify_source_binding(root, source_path, expected_source)
     prepared = _prepare_run_source(root, attempt, ast)
@@ -73,6 +74,7 @@ def execute_accepted_run(
             pipeline_plan = create_pipeline_plan(config_path, pipeline_plan_path)
         finally:
             config_path.unlink(missing_ok=True)
+    _verify_run_provider_binding(expected_provider, pipeline_plan)
     pipeline_id = _text(pipeline_plan, "pipeline_id")
     try:
         receipt, decision = apply_pipeline(pipeline_plan_path, pipeline_id, resume=False)
@@ -106,6 +108,20 @@ def execute_accepted_run(
             "run_receipt_path": str(run_receipt_path),
         },
     }
+
+
+def _verify_run_provider_binding(
+    expected: Mapping[str, object], pipeline_plan: Mapping[str, object]
+) -> None:
+    actual = _mapping(pipeline_plan.get("provider_identity"), "provider_identity")
+    if dict(actual) != dict(expected):
+        raise PipelineError(
+            "RUN_PROVIDER_DRIFT",
+            "The transform provider changed after this run plan was accepted",
+            expected_provider_id=expected.get("provider_id"),
+            actual_provider_id=actual.get("provider_id"),
+            remediation="create and accept a new run plan with the active provider",
+        )
 
 
 def _build_run_receipt(
@@ -380,12 +396,9 @@ def _refresh_run_index(datajig: Path) -> list[dict[str, object]]:
         reverse=True,
     )
     for path in candidates:
-        try:
-            receipt = _verify_run_receipt(
-                _load_json_object(path, "RUN_RECEIPT_TAMPERED")
-            )
-        except (OSError, PipelineError):
-            continue
+        receipt = _verify_run_receipt(
+            _load_json_object(path, "RUN_RECEIPT_TAMPERED")
+        )
         entries.append(
             {
                 "path": path.relative_to(datajig).as_posix(),
@@ -440,8 +453,10 @@ def _load_or_rebuild_run_index(datajig: Path) -> list[dict[str, object]]:
             if relative.is_absolute() or ".." in relative.parts:
                 raise PipelineError("RUN_INDEX_CORRUPT", "Run index path is invalid")
             receipt_path = datajig / relative
+            if not receipt_path.is_file():
+                raise PipelineError("RUN_INDEX_CORRUPT", "Run index receipt is missing")
             receipt = _verify_run_receipt(
-                _load_json_object(receipt_path, "RUN_INDEX_CORRUPT")
+                _load_json_object(receipt_path, "RUN_RECEIPT_TAMPERED")
             )
             if receipt.get("run_receipt_id") != entry.get("run_receipt_id"):
                 raise PipelineError("RUN_INDEX_CORRUPT", "Run index identity is stale")
@@ -458,8 +473,12 @@ def _load_or_rebuild_run_index(datajig: Path) -> list[dict[str, object]]:
         if indexed_paths != current_paths:
             raise PipelineError("RUN_INDEX_CORRUPT", "Run index membership is stale")
         return entries
-    except (OSError, PipelineError):
+    except OSError:
         return _refresh_run_index(datajig)
+    except PipelineError as exc:
+        if exc.code == "RUN_INDEX_CORRUPT":
+            return _refresh_run_index(datajig)
+        raise
 
 
 def _prepare_run_source(root: Path, attempt: Path, ast: Mapping[str, object]) -> Path:

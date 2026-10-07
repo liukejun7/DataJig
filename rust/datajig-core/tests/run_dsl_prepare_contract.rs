@@ -107,7 +107,7 @@ fn field_lists_keep_quoted_commas_and_prepare_defaults_are_explicit() {
     assert_eq!(
         compiled.ast.prepare.steps[0],
         PrepareStepAst::Select {
-            fields: vec!["last,name".into(), "score".into()],
+            fields: vec!["last,name".into(), "score".into(), "id".into()],
         }
     );
     assert_eq!(
@@ -161,4 +161,33 @@ fn unquoted_string_scalars_are_rejected_with_a_fix_example() {
 
     assert_eq!(error.location, "prepare[0].value");
     assert!(error.remediation.contains("'missing'"));
+}
+
+#[test]
+fn explicit_source_identity_is_preserved_by_select() {
+    let compiled = compile_dsl(
+        "from input.csv source-id-field id prepare select name,score export id-field id",
+    )
+    .unwrap();
+
+    assert_eq!(
+        compiled.ast.prepare.steps[0],
+        PrepareStepAst::Select {
+            fields: vec!["name".into(), "score".into(), "id".into()],
+        }
+    );
+}
+
+#[test]
+fn renaming_the_source_identity_is_rejected_at_compile_time() {
+    let error = compile_dsl(
+        "from input.csv source-id-field id prepare rename id to key export id-field key",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_DSL");
+    assert_eq!(error.location, "prepare[0].from");
+    assert!(error.position > 0);
+    assert!(error.message.contains("source identity"));
+    assert!(error.remediation.contains("must survive prepare"));
 }

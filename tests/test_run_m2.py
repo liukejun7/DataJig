@@ -134,6 +134,9 @@ class RunM2JourneyTests(DataJigCliTestCase):
         self.assertFalse((self.root / "delivery").exists())
 
         artifact = result.payload["artifact"]
+        self.assertTrue(
+            artifact["binding"]["provider_identity"]["provider_id"].startswith("provider_")
+        )
         resumed = self.run_cli(
             "run",
             "--resume",

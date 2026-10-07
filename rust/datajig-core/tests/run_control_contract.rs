@@ -1,7 +1,7 @@
 use datajig_core::{
-    AuthorizationLevel, AuthorizationStatus, RunConsumptionBinding, RunPlanBinding, authorize_run,
-    classify_run_output, compile_dsl, create_run_plan, derive_run_identities,
-    fingerprint_run_source, load_run_plan_for_resume, persist_run_plan,
+    AuthorizationLevel, AuthorizationStatus, RunConsumptionBinding, RunPlanBinding,
+    TransformProviderIdentity, authorize_run, classify_run_output, compile_dsl, create_run_plan,
+    derive_run_identities, fingerprint_run_source, load_run_plan_for_resume, persist_run_plan,
 };
 use serde_json::json;
 use std::fs;
@@ -42,9 +42,20 @@ fn binding(source_content_id: &str) -> RunPlanBinding {
     RunPlanBinding {
         source_content_id: source_content_id.into(),
         engine_version: "datajig-run-engine-v1".into(),
+        provider_identity: provider("1.5.6"),
         output: "bundle".into(),
         consumption: None,
     }
+}
+
+fn provider(duckdb_version: &str) -> TransformProviderIdentity {
+    TransformProviderIdentity::create(
+        "0.9.0".into(),
+        duckdb_version.into(),
+        "CPython".into(),
+        "3.12.0".into(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -85,6 +96,18 @@ fn consumption_has_its_own_identity_without_changing_intent() {
             .as_deref()
             .is_some_and(|identity| identity.starts_with("consume_"))
     );
+}
+
+#[test]
+fn provider_drift_changes_the_plan_but_not_the_user_intent() {
+    let task = compiled();
+    let first = derive_run_identities(&task, &binding("src_aaa"), "one").unwrap();
+    let mut changed = binding("src_aaa");
+    changed.provider_identity = provider("1.6.0");
+    let drifted = derive_run_identities(&task, &changed, "two").unwrap();
+
+    assert_eq!(first.intent_id, drifted.intent_id);
+    assert_ne!(first.plan_id, drifted.plan_id);
 }
 
 #[test]

@@ -77,7 +77,7 @@ impl Parser {
         };
 
         let mut prepare_steps = if self.consume_keyword("prepare") {
-            self.parse_prepare_steps()?
+            self.parse_prepare_steps(&source_id_field.field)?
         } else {
             Vec::new()
         };
@@ -143,8 +143,9 @@ impl Parser {
         let generated_source_id =
             (source_id_field.mode == SourceIdMode::Auto).then(|| RESERVED_SOURCE_ID.to_owned());
         if generated_source_id.is_some() {
-            preserve_generated_source_id(&mut prepare_steps);
+            preserve_source_id(&mut prepare_steps, RESERVED_SOURCE_ID);
         } else {
+            preserve_source_id(&mut prepare_steps, &source_id_field.field);
             reject_reserved_field(&id_field, "export.id-field", id_field_position)?;
         }
         if let Some(RunTransformAst::Aggregate {
@@ -320,11 +321,11 @@ impl Parser {
         }
     }
 
-    fn parse_prepare_steps(&mut self) -> Result<Vec<PrepareStepAst>, RunDslError> {
+    fn parse_prepare_steps(&mut self, source_id: &str) -> Result<Vec<PrepareStepAst>, RunDslError> {
         let mut steps = Vec::new();
         loop {
             let step_index = steps.len();
-            steps.push(self.parse_prepare_step(step_index)?);
+            steps.push(self.parse_prepare_step(step_index, source_id)?);
             if !matches!(self.peek_kind(), Some(TokenKind::Comma)) {
                 break;
             }
@@ -345,7 +346,11 @@ impl Parser {
         Ok(steps)
     }
 
-    fn parse_prepare_step(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+    fn parse_prepare_step(
+        &mut self,
+        index: usize,
+        source_id: &str,
+    ) -> Result<PrepareStepAst, RunDslError> {
         let Some(token) = self.tokens.get(self.cursor) else {
             return Err(self.error(
                 "INVALID_DSL",
@@ -362,7 +367,7 @@ impl Parser {
                 fields: self.parse_field_list(&format!("prepare[{index}].fields"))?,
             }),
             "filter" => self.parse_filter(index),
-            "rename" => self.parse_rename(index),
+            "rename" => self.parse_rename(index, source_id),
             "cast" => self.parse_cast(index),
             "trim" => Ok(PrepareStepAst::Trim {
                 fields: self.parse_field_list(&format!("prepare[{index}].fields"))?,
@@ -407,11 +412,24 @@ impl Parser {
         })
     }
 
-    fn parse_rename(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
+    fn parse_rename(
+        &mut self,
+        index: usize,
+        source_id: &str,
+    ) -> Result<PrepareStepAst, RunDslError> {
         let (from, from_position) = self.take_value(
             &format!("prepare[{index}].from"),
             "use `rename <field> to <field>`",
         )?;
+        if from == source_id {
+            return Err(RunDslError::new(
+                "INVALID_DSL",
+                format!("prepare[{index}].from"),
+                from_position,
+                format!("source identity field `{source_id}` cannot be renamed"),
+                "the declared source identity must survive prepare unchanged",
+            ));
+        }
         reject_reserved_field(&from, &format!("prepare[{index}].from"), from_position)?;
         self.expect_keyword(
             "to",
@@ -716,11 +734,11 @@ fn reject_reserved_field(field: &str, location: &str, position: usize) -> Result
     Ok(())
 }
 
-fn preserve_generated_source_id(steps: &mut [PrepareStepAst]) {
+fn preserve_source_id(steps: &mut [PrepareStepAst], source_id: &str) {
     for step in steps {
         if let PrepareStepAst::Select { fields } = step {
-            if !fields.iter().any(|field| field == RESERVED_SOURCE_ID) {
-                fields.push(RESERVED_SOURCE_ID.into());
+            if !fields.iter().any(|field| field == source_id) {
+                fields.push(source_id.into());
             }
         }
     }

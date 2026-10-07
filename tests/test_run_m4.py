@@ -132,7 +132,6 @@ class RunM4ObservabilityTests(DataJigCliTestCase):
         repaired = self.run_cli("status", "--state", state).payload["artifact"]
         self.assertEqual(completed["run_receipt_id"], repaired["recent_run"]["run_receipt_id"])
 
-
 if __name__ == "__main__":
     import unittest
 

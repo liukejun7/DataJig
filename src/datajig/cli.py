@@ -741,7 +741,13 @@ def _run_native_command(raw_args: Sequence[str]) -> int:
             _print_agent_error("RUN_EXECUTION_FAILED", str(exc), command="run")
             return 2
     if completed.returncode == 0 and raw_args and raw_args[0] == "status":
-        stdout = _augment_status_with_pipeline(stdout, native_args)
+        from datajig.pipeline import PipelineError
+
+        try:
+            stdout = _augment_status_with_pipeline(stdout, native_args)
+        except PipelineError as exc:
+            _print_pipeline_error(exc)
+            return 2
         if status_format == "text":
             stdout = _render_status_text(stdout)
     elif completed.returncode == 0 and raw_args and raw_args[0] == "capabilities":
@@ -785,7 +791,7 @@ def _augment_capabilities_with_pipeline(serialized: str) -> str:
 
 
 def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> str:
-    from datajig.pipeline import PipelineError, read_pipeline_document
+    from datajig.pipeline import read_pipeline_document
     from datajig.run import run_status
 
     try:
@@ -815,7 +821,7 @@ def _augment_status_with_pipeline(serialized: str, raw_args: Sequence[str]) -> s
         if observed_run is not None:
             artifact.update(observed_run)
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-    except (OSError, ValueError, PipelineError):
+    except (OSError, ValueError):
         return serialized
 
 

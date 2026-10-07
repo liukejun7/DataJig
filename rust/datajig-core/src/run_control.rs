@@ -1,7 +1,9 @@
 use crate::identity::blake3_content_id;
 use crate::io::save_new_file_atomically;
 use crate::strict_json::reject_duplicate_json_members;
-use crate::{CompiledRunTask, RunTaskAst, SourceFormat, canonicalize_run_task};
+use crate::{
+    CompiledRunTask, RunTaskAst, SourceFormat, TransformProviderIdentity, canonicalize_run_task,
+};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
@@ -27,6 +29,7 @@ pub struct RunConsumptionBinding {
 pub struct RunPlanBinding {
     pub source_content_id: String,
     pub engine_version: String,
+    pub provider_identity: TransformProviderIdentity,
     pub output: String,
     pub consumption: Option<RunConsumptionBinding>,
 }
@@ -131,6 +134,7 @@ struct PlanIdentity<'a> {
     intent_id: &'a str,
     source_content_id: &'a str,
     engine_version: &'a str,
+    provider_identity: &'a TransformProviderIdentity,
     output: &'a str,
     consumption_id: Option<&'a str>,
 }
@@ -149,6 +153,10 @@ pub fn derive_run_identities(
 ) -> Result<RunIdentities, RunControlError> {
     validate_value("source_content_id", &binding.source_content_id)?;
     validate_value("engine_version", &binding.engine_version)?;
+    binding
+        .provider_identity
+        .validate()
+        .map_err(|error| RunControlError::invalid("provider_identity", error.to_string()))?;
     validate_value("output", &binding.output)?;
     validate_attempt_nonce(attempt_nonce)?;
 
@@ -162,6 +170,7 @@ pub fn derive_run_identities(
         intent_id: &compiled.intent_id,
         source_content_id: &binding.source_content_id,
         engine_version: &binding.engine_version,
+        provider_identity: &binding.provider_identity,
         output: &binding.output,
         consumption_id: consumption_id.as_deref(),
     })
