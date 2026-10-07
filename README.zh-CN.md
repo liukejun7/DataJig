@@ -24,7 +24,7 @@ raw source → 锁定 → 处理/transform → 审查 → seal → 导出 → �
 如果数据在审查后变化、执行偏离计划，或 Agent 修改了任务范围外的 bytes，DataJig
 会 fail closed，而不是带着过期证据继续运行。
 
-> 版本 `0.8.3` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
+> 版本 `0.8.4` · 本地优先 · 可恢复 Pipeline · 支持 CSV、Parquet、JSONL 与 ImageFolder
 
 ## DataJig 在技术栈中的位置
 
@@ -320,7 +320,7 @@ datajig changeset-begin \
 Agent 修改文件后，冻结并审查精确候选：
 
 ```bash
-datajig changeset-stage --change chg_...
+datajig changeset-stage --change @active
 datajig check
 ```
 
@@ -364,6 +364,10 @@ Materialize 会重新哈希存储的 blob，以原子方式创建输出，且绝
 ## 增加质量门槛
 
 初始化 workspace 时固定 JSON 策略：
+
+```bash
+datajig artifact-schema jsonl-quality-policy
+```
 
 ```json
 {
@@ -423,6 +427,9 @@ DataJig 会重新检查现场数据，并返回确定性的 `patch_...` ID 和�
 `patch-apply` 必须显式接受这个精确 ID，才会原子替换目标物理行并准备新的
 changeset。它不会打印原始 record ID、修改前值或修改后值。Agent 按返回的
 `next_actions` 复查新候选即可。
+
+文件系统支持扩展属性时，patch apply 会原样保留它们；文件系统明确声明不支持
+xattr 时仍可正常工作。如果某个实际存在的属性无法读取或写回，发布仍会失败关闭。
 
 每次成功应用都会返回一个不透明的 `undo_...` 句柄。在其他修改或 HEAD 迁移改变
 事务锚点前，可以精确恢复原始行：
@@ -589,6 +596,8 @@ datajig capabilities
 datajig describe
 datajig describe check
 datajig artifact-schema
+datajig artifact-schema jsonl-quality-policy
+datajig artifact-schema pipeline-config
 datajig artifact-schema prepare-recipe
 datajig artifact-schema subset-view
 datajig artifact-schema training-consumption-plan

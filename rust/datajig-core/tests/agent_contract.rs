@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_73cf29aa9d525da5c6ec98e8224b1e5512927d4c6bb3a05e3c774803e42baf03", identities[0],
+        "contract_f1af5c06a2d08a5ffc8d530f32490f3dfed1262002fc828f9117e69ca3efe13c", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }
@@ -366,6 +366,25 @@ fn invalid_split_errors_include_a_machine_executable_remediation() {
 
 #[test]
 fn check_help_and_descriptor_publish_context_aliases() {
+    let stage_help = run(&["changeset-stage", "--help"]);
+    assert!(stage_help.status.success());
+    let stage_help = String::from_utf8(stage_help.stdout).unwrap();
+    assert!(stage_help.contains("@active"));
+
+    let stage_descriptor = run_json(&["describe", "changeset-stage"]);
+    let stage_change = stage_descriptor["command"]["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|input| input["name"] == "change")
+        .unwrap();
+    assert!(
+        stage_change["description"]
+            .as_str()
+            .unwrap()
+            .contains("@active")
+    );
+
     let help = run(&["check", "--help"]);
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
@@ -402,6 +421,14 @@ fn check_help_and_descriptor_publish_context_aliases() {
         json!("resolve the unique active pair or fail closed"),
         capabilities["argument_contracts"]["changeset_selectors"]["omission"]
     );
+    assert_eq!(
+        json!("resolve one declaration matching the current HEAD or fail closed"),
+        capabilities["argument_contracts"]["changeset_selectors"]["stage"]
+    );
+    assert_eq!(
+        json!("an explicit changeset binds its declaration; two aliases require one staged pair"),
+        capabilities["argument_contracts"]["changeset_selectors"]["pair"]
+    );
 
     for command_name in ["review-plan", "seal", "status"] {
         let descriptor = run_json(&["describe", command_name]);
@@ -417,6 +444,24 @@ fn check_help_and_descriptor_publish_context_aliases() {
             );
         }
     }
+}
+
+#[test]
+fn capabilities_explain_patch_apply_without_xattr_support() {
+    let capabilities = run_json(&["capabilities"]);
+
+    assert_eq!(
+        json!(false),
+        capabilities["jsonl_patch_apply"]["xattrs_required"]
+    );
+    assert_eq!(
+        json!("preserve_when_supported"),
+        capabilities["jsonl_patch_apply"]["xattr_policy"]
+    );
+    assert_eq!(
+        json!("fail_closed_on_read_or_restore_error"),
+        capabilities["jsonl_patch_apply"]["metadata_error_policy"]
+    );
 }
 
 #[test]

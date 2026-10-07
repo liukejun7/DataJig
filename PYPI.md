@@ -8,9 +8,9 @@ It wraps data work in explicit plans, deterministic identities, semantic checks,
 immutable revisions, and evidence of which records crossed a verified training
 adapter boundary.
 
-Version 0.8.3 preserves bounded DuckDB conversion diagnostics, publishes the
-complete pipeline configuration schema and example, and continuously exercises
-a three-day raw-log-to-training journey in parallel CI.
+Version 0.8.4 makes active changeset selectors consistent, publishes the full
+JSONL quality-policy schema and example, and allows guarded patch application on
+filesystems that explicitly do not support extended attributes.
 
 ```text
 raw source -> pin -> prepare/transform -> review -> seal -> export -> train
@@ -75,6 +75,7 @@ single reviewed pipeline:
 
 ```bash
 datajig artifact-schema pipeline-config
+datajig artifact-schema jsonl-quality-policy
 datajig pipeline plan --config pipeline.yaml --plan pipeline-plan.json
 datajig pipeline apply pipeline-plan.json --accept-plan pipe_...
 datajig pipeline info deliveries/my-training-data/pipeline-receipt.json --verify

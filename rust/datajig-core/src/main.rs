@@ -25,9 +25,9 @@ use datajig_core::{
     install_repository, is_patchable_quality_code, list_findings, load_manifest, load_report,
     locate_changeset_finding, manifest_diff_page, materialize_revision, plan_changeset,
     plan_hf_import, plan_prepare, plan_training_consumption, plan_transform, plan_workspace,
-    preview_jsonl_patch, resolve_optional_changeset_context, revision_log, run_tutorial,
-    seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset, status_changeset,
-    status_workspace, undo_jsonl_patch, write_agent_skill,
+    preview_jsonl_patch, resolve_change_selector, resolve_optional_changeset_context, revision_log,
+    run_tutorial, seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset,
+    status_changeset, status_workspace, undo_jsonl_patch, write_agent_skill,
 };
 use serde_json::{Value, json};
 use std::io::Read;
@@ -78,6 +78,9 @@ enum Command {
         ci: bool,
     },
     /// Return a machine-readable input artifact contract.
+    #[command(
+        after_help = "Available artifacts:\n  jsonl-field-patch\n  jsonl-quality-policy\n  pipeline-config\n  prepare-recipe\n  repository-integration\n  subset-view\n  training-consumption-plan\n  training-consumption-receipt\n  transform-plan\n  transform-receipt"
+    )]
     ArtifactSchema {
         /// Optional artifact name; omit to list supported schemas.
         artifact: Option<String>,
@@ -95,6 +98,9 @@ enum Command {
         output: PathBuf,
     },
     /// Initialize a project-local last-good baseline for a dataset.
+    #[command(
+        after_help = "Quality policy schema and example:\n  datajig artifact-schema jsonl-quality-policy"
+    )]
     Init {
         /// ImageFolder directory or JSONL file to track.
         dataset: PathBuf,
@@ -240,6 +246,7 @@ enum Command {
         state: PathBuf,
         #[arg(long, visible_alias = "workers", default_value_t = 1)]
         threads: usize,
+        /// Exact chg_... ID, or @active/@latest when one declaration matches the current HEAD.
         #[arg(long)]
         change: String,
     },
@@ -924,6 +931,12 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 "jsonl_quality_policy_schema_versions": [datajig_core::JSONL_QUALITY_POLICY_SCHEMA_VERSION],
                 "jsonl_patch_schema_versions": [datajig_core::JSONL_PATCH_SCHEMA_VERSION],
                 "jsonl_patch_receipt_schema_versions": [1],
+                "jsonl_patch_apply": {
+                    "platforms": ["unix"],
+                    "xattrs_required": false,
+                    "xattr_policy": "preserve_when_supported",
+                    "metadata_error_policy": "fail_closed_on_read_or_restore_error"
+                },
                 "artifact_schema_versions": [datajig_core::ARTIFACT_SCHEMA_VERSION],
                 "repository_integration_schema_versions": [datajig_core::REPOSITORY_INTEGRATION_SCHEMA_VERSION],
                 "prepare_recipe_schema_versions": [datajig_core::PREPARE_RECIPE_SCHEMA_VERSION],
@@ -1015,7 +1028,9 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                     "changeset_selectors": {
                         "aliases": ["@active", "@latest"],
                         "resolution": "unique compatible candidate or fail closed",
-                        "omission": "resolve the unique active pair or fail closed"
+                        "omission": "resolve the unique active pair or fail closed",
+                        "stage": "resolve one declaration matching the current HEAD or fail closed",
+                        "pair": "an explicit changeset binds its declaration; two aliases require one staged pair"
                     }
                 }),
             );
@@ -1307,6 +1322,8 @@ fn run(cli: Cli) -> Result<(), CommandError> {
             threads,
             change,
         } => {
+            let change = resolve_change_selector(&state, &change)
+                .map_err(|error| (workspace_error_code(&error), 2, error))?;
             let artifact = stage_changeset(&state, threads, &change)
                 .map_err(|error| (workspace_error_code(&error), 2, error))?;
             println!(

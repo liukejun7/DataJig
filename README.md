@@ -38,7 +38,7 @@ Every task, candidate, review, accepted revision, subset, transform, and trainin
 bundle receives a deterministic identity. If data changes after review, a plan
 drifts, or an agent touches bytes outside its declared task, DataJig fails closed.
 
-> Version `0.8.3` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
+> Version `0.8.4` · local-first · recoverable pipelines · CSV, Parquet, JSONL, and ImageFolder
 
 ## Where DataJig fits
 
@@ -446,7 +446,7 @@ datajig changeset-begin \
 After the agent edits the file, freeze and review the exact candidate:
 
 ```bash
-datajig changeset-stage --change chg_...
+datajig changeset-stage --change @active
 datajig check
 ```
 
@@ -494,6 +494,10 @@ from metadata, so DataJig fails explicitly when their content is unavailable.
 ## Add a quality gate
 
 Pin a JSON policy when the workspace is created:
+
+```bash
+datajig artifact-schema jsonl-quality-policy
+```
 
 ```json
 {
@@ -556,6 +560,10 @@ the predicted record hash. `patch-apply` requires that exact ID as explicit
 consent, atomically rewrites only the intended physical line, and prepares the
 replacement changeset. It never prints the raw record ID, before value, or after
 value. Follow the returned `next_actions` to check the new candidate.
+
+Patch apply preserves extended attributes when the filesystem supports them.
+Filesystems that explicitly report no xattr support remain usable; any failure
+to read or restore an attribute that does exist still aborts publication.
 
 Every successful apply returns an opaque `undo_...` handle. Until another edit
 or HEAD transition changes its anchors, the exact original line can be restored:
@@ -734,6 +742,8 @@ datajig capabilities
 datajig describe
 datajig describe check
 datajig artifact-schema
+datajig artifact-schema jsonl-quality-policy
+datajig artifact-schema pipeline-config
 datajig artifact-schema prepare-recipe
 datajig artifact-schema subset-view
 datajig artifact-schema training-consumption-plan

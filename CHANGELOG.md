@@ -3,6 +3,33 @@
 All notable user-visible changes to DataJig are documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.4] - 2026-10-07
+
+### Added
+
+- `artifact-schema jsonl-quality-policy` with the complete strict policy shape,
+  canonical executable example, limits, and field-level constraints.
+- Explicit patch-apply capability metadata for xattr requirements and metadata
+  preservation failures.
+
+### Changed
+
+- `@active` and `@latest` now resolve through one compatible-pair algorithm.
+  `changeset-stage --change @active` resolves a unique active declaration;
+  an explicit changeset can identify its declaration; and two declarations
+  with only one staged candidate resolve to that unique pair.
+- Guarded patch apply treats an explicit filesystem `ENOTSUP`/`EOPNOTSUPP`
+  response while listing xattrs as an empty attribute set. Existing attributes
+  must still be read and restored exactly or publication fails closed.
+
+### Fixed
+
+- Changeset staging no longer passes `@active` to the content-ID loader as if
+  it were a `chg_...` identity.
+- Containers and CI filesystems without extended-attribute support can now run
+  guarded patch apply and undo while retaining the same locking, content,
+  inode, metadata, and atomic-publication checks.
+
 ## [0.8.3] - 2026-10-07
 
 ### Added
