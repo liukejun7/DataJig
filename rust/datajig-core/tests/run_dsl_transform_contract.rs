@@ -109,11 +109,10 @@ fn aggregate_rejects_unknown_functions_and_non_output_final_ids() {
     assert_eq!(function_error.location, "transform.aggregate[0].function");
     assert!(function_error.remediation.contains("count/sum/avg/min/max"));
 
-    let id_error = compile_dsl(
-        "from rows.csv source-id-field auto aggregate by UserID total=sum(amount) export id-field missing",
-    )
-    .unwrap_err();
+    let task = "from rows.csv source-id-field auto aggregate by UserID total=sum(amount) export id-field missing";
+    let id_error = compile_dsl(task).unwrap_err();
     assert_eq!(id_error.location, "export.id-field");
+    assert_eq!(id_error.position, task.find("missing").unwrap());
     assert!(id_error.message.contains("aggregate output"));
 }
 
