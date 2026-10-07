@@ -1,0 +1,136 @@
+use super::RunDslError;
+use crate::identity::blake3_content_id;
+use serde::{Deserialize, Serialize};
+
+pub const RUN_DSL_SCHEMA_VERSION: u8 = 1;
+pub const RUN_INTENT_ID_DOMAIN: &[u8] = b"datajig-run-intent-v1\0";
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct RunTaskAst {
+    pub namespace: String,
+    pub kind: String,
+    pub schema_version: u8,
+    pub source: RunSourceAst,
+    pub prepare: RunPrepareAst,
+    pub transform: RunTransformAst,
+    pub export: RunExportAst,
+}
+
+impl RunTaskAst {
+    pub fn identity(
+        path: impl Into<String>,
+        format: SourceFormat,
+        id_field: impl Into<String>,
+    ) -> Self {
+        let id_field = id_field.into();
+        Self {
+            namespace: "datajig".into(),
+            kind: "run_task".into(),
+            schema_version: RUN_DSL_SCHEMA_VERSION,
+            source: RunSourceAst {
+                path: path.into(),
+                format: Some(format),
+                source_id_field: SourceIdAst {
+                    mode: SourceIdMode::Field,
+                    field: id_field.clone(),
+                },
+            },
+            prepare: RunPrepareAst {
+                generated_source_id: None,
+                steps: Vec::new(),
+            },
+            transform: RunTransformAst::Sql {
+                sql: format!("SELECT * FROM source ORDER BY {id_field}"),
+                generated: true,
+            },
+            export: RunExportAst {
+                splits: TrainingSplitsAst::default(),
+                id_field,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct RunSourceAst {
+    pub path: String,
+    pub format: Option<SourceFormat>,
+    pub source_id_field: SourceIdAst,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFormat {
+    Csv,
+    Jsonl,
+    Parquet,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct SourceIdAst {
+    pub mode: SourceIdMode,
+    pub field: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceIdMode {
+    Auto,
+    Field,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct RunPrepareAst {
+    pub generated_source_id: Option<String>,
+    pub steps: Vec<PrepareStepAst>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub enum PrepareStepAst {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunTransformAst {
+    Sql { sql: String, generated: bool },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct RunExportAst {
+    pub splits: TrainingSplitsAst,
+    pub id_field: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct TrainingSplitsAst {
+    pub train: u16,
+    pub val: u16,
+    pub test: u16,
+}
+
+impl Default for TrainingSplitsAst {
+    fn default() -> Self {
+        Self {
+            train: 80,
+            val: 10,
+            test: 10,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledRunTask {
+    pub ast: RunTaskAst,
+    pub canonical_json: String,
+    pub intent_id: String,
+}
+
+pub fn canonicalize_run_task(ast: RunTaskAst) -> Result<CompiledRunTask, RunDslError> {
+    let canonical_json = serde_json::to_string(&ast)
+        .map_err(|error| RunDslError::internal(format!("cannot serialize run AST: {error}")))?;
+    let intent_id = blake3_content_id("intent", RUN_INTENT_ID_DOMAIN, canonical_json.as_bytes());
+    Ok(CompiledRunTask {
+        ast,
+        canonical_json,
+        intent_id,
+    })
+}
