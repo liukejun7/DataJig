@@ -19,7 +19,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Reusable workflows cannot elevate beyond their caller. The wheel workflow's
+  # optional preview job needs contents:write, while its build jobs retain the
+  # called workflow's explicit contents:read permission.
   build:
+    permissions:
+      contents: write
     uses: ./.github/workflows/wheels.yml
 
   publish:
