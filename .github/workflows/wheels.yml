@@ -49,7 +49,7 @@ jobs:
             "$MANYLINUX_IMAGE" \
             bash -euxo pipefail -c '
               export PATH="$CARGO_HOME/bin:/opt/python/cp311-cp311/bin:$PATH"
-              python -m pip install "build>=1.2,<2" "auditwheel>=6,<7" "twine>=6,<7"
+              python -m pip install "build==1.2.2.post1" "auditwheel==6.1.0" "twine==6.0.1"
               python -m build --wheel --outdir dist/native
               auditwheel repair dist/native/*.whl --wheel-dir dist/wheel --plat "${{ matrix.platform }}"
               auditwheel show dist/wheel/*.whl
@@ -125,7 +125,7 @@ jobs:
           target: ${{ matrix.target }}
       - name: Build native wheel
         run: |
-          python -m pip install "build>=1.2,<2" "delocate>=0.12,<1" "twine>=6,<7"
+          python -m pip install "build==1.2.2.post1" "delocate==0.12.0" "twine==6.0.1"
           python -m build --wheel --outdir dist/native
           delocate-wheel --require-archs "${{ matrix.arch }}" --wheel-dir dist/wheel dist/native/*.whl
           delocate-listdeps dist/wheel/*.whl

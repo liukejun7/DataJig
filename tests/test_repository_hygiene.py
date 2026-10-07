@@ -100,7 +100,8 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         workflow = (
             REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("python -m pip install -e '.[dev,duckdb]'", workflow)
+        self.assertIn('"duckdb==1.5.6"', workflow)
+        self.assertIn("python -m pip install --no-deps .", workflow)
 
     def test_ci_parallelizes_real_data_suites_and_python_compatibility(self) -> None:
         workflow = (
