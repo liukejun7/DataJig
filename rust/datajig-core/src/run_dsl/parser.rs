@@ -1,12 +1,13 @@
 use super::RunDslError;
 use super::ast::{
-    CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst, FilterPredicateAst, MissingModeAst,
-    PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst,
-    RunTransformAst, SourceFormat, SourceIdAst, SourceIdMode, TrainingSplitsAst,
-    canonicalize_run_task,
+    AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
+    FilterPredicateAst, MissingModeAst, PrepareStepAst, RUN_DSL_SCHEMA_VERSION, RunExportAst,
+    RunPrepareAst, RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat, SourceIdAst,
+    SourceIdMode, TrainingSplitsAst, canonicalize_run_task,
 };
 use super::lexer::{Token, TokenKind, lex};
 use serde_json::{Number, Value};
+use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 const RESERVED_SOURCE_ID: &str = "_datajig_source_id";
@@ -57,7 +58,7 @@ impl Parser {
                 "add `source-id-field <field>` or explicitly opt in with `source-id-field auto`",
             ));
         }
-        let (source_id, _) = self.take_value(
+        let (source_id, source_id_position) = self.take_value(
             "source.source-id-field",
             "provide a field name or `auto` after `source-id-field`",
         )?;
@@ -67,16 +68,25 @@ impl Parser {
                 field: RESERVED_SOURCE_ID.into(),
             }
         } else {
+            reject_reserved_field(&source_id, "source.source-id-field", source_id_position)?;
             SourceIdAst {
                 mode: SourceIdMode::Field,
                 field: source_id,
             }
         };
 
-        let prepare_steps = if self.consume_keyword("prepare") {
+        let mut prepare_steps = if self.consume_keyword("prepare") {
             self.parse_prepare_steps()?
         } else {
             Vec::new()
+        };
+
+        let parsed_transform = if self.consume_keyword("transform") {
+            Some(self.parse_sql_transform()?)
+        } else if self.consume_keyword("aggregate") {
+            Some(self.parse_aggregate_transform()?)
+        } else {
+            None
         };
 
         if !self.consume_keyword("export") {
@@ -99,18 +109,26 @@ impl Parser {
             TrainingSplitsAst::default()
         };
 
-        if !self.consume_keyword("id-field") {
+        let aggregate_default_id = match &parsed_transform {
+            Some(RunTransformAst::Aggregate { by, .. }) => Some(by.clone()),
+            _ => None,
+        };
+        let id_field = if self.consume_keyword("id-field") {
+            self.take_value(
+                "export.id-field",
+                "provide the final record field after `id-field`",
+            )?
+            .0
+        } else if let Some(by) = aggregate_default_id {
+            by
+        } else {
             return Err(self.error(
                 "INVALID_DSL",
                 "export.id-field",
                 "the final record identity is required for a non-aggregate task",
                 "add `id-field <field>` after the export split settings",
             ));
-        }
-        let (id_field, _) = self.take_value(
-            "export.id-field",
-            "provide the final record field after `id-field`",
-        )?;
+        };
         if self.cursor != self.tokens.len() {
             return Err(self.error(
                 "INVALID_DSL",
@@ -122,6 +140,36 @@ impl Parser {
 
         let generated_source_id =
             (source_id_field.mode == SourceIdMode::Auto).then(|| RESERVED_SOURCE_ID.to_owned());
+        if generated_source_id.is_some() {
+            preserve_generated_source_id(&mut prepare_steps);
+        } else {
+            reject_reserved_field(&id_field, "export.id-field", self.end_position)?;
+        }
+        if let Some(RunTransformAst::Aggregate {
+            by, aggregations, ..
+        }) = &parsed_transform
+        {
+            let is_output = id_field == *by
+                || aggregations
+                    .iter()
+                    .any(|aggregate| aggregate.alias == id_field);
+            if !is_output {
+                return Err(RunDslError::new(
+                    "INVALID_DSL",
+                    "export.id-field",
+                    self.end_position,
+                    format!("id-field `{id_field}` is not present in the aggregate output"),
+                    "use the group field or an aggregate alias as id-field",
+                ));
+            }
+        }
+        let transform = parsed_transform.unwrap_or_else(|| RunTransformAst::Sql {
+            sql: format!(
+                "SELECT * FROM source ORDER BY {}",
+                sql_identifier(&id_field)
+            ),
+            generated: true,
+        });
         let ast = RunTaskAst {
             namespace: "datajig".into(),
             kind: "run_task".into(),
@@ -135,16 +183,139 @@ impl Parser {
                 generated_source_id,
                 steps: prepare_steps,
             },
-            transform: RunTransformAst::Sql {
-                sql: format!(
-                    "SELECT * FROM source ORDER BY {}",
-                    sql_identifier(&id_field)
-                ),
-                generated: true,
-            },
+            transform,
             export: RunExportAst { splits, id_field },
         };
         canonicalize_run_task(ast)
+    }
+
+    fn parse_sql_transform(&mut self) -> Result<RunTransformAst, RunDslError> {
+        let Some(token) = self.tokens.get(self.cursor).cloned() else {
+            return Err(self.error(
+                "INVALID_DSL",
+                "transform.sql",
+                "the explicit transform SQL is missing",
+                "wrap SQL in backticks, for example `SELECT id FROM source ORDER BY id`",
+            ));
+        };
+        let TokenKind::Backtick(sql) = token.kind else {
+            return Err(RunDslError::new(
+                "INVALID_DSL",
+                "transform.sql",
+                token.start,
+                "explicit transform SQL must be enclosed in backticks",
+                "use `transform `SELECT ... FROM source ...``",
+            ));
+        };
+        if sql.trim().is_empty() {
+            return Err(RunDslError::new(
+                "INVALID_DSL",
+                "transform.sql",
+                token.start,
+                "explicit transform SQL cannot be empty",
+                "provide one SELECT query over the `source` alias",
+            ));
+        }
+        self.cursor += 1;
+        Ok(RunTransformAst::Sql {
+            sql: sql.trim().to_owned(),
+            generated: false,
+        })
+    }
+
+    fn parse_aggregate_transform(&mut self) -> Result<RunTransformAst, RunDslError> {
+        self.expect_keyword(
+            "by",
+            "transform.aggregate.by",
+            "use `aggregate by <field> <alias>=<function>(<field>)`",
+        )?;
+        let (by, by_position) = self.take_value(
+            "transform.aggregate.by",
+            "provide exactly one grouping field after `by`",
+        )?;
+        reject_reserved_field(&by, "transform.aggregate.by", by_position)?;
+
+        let mut aggregations = Vec::new();
+        let mut aliases = BTreeSet::new();
+        loop {
+            let index = aggregations.len();
+            let (alias, alias_position) = self.take_value(
+                &format!("transform.aggregate[{index}].alias"),
+                "use `<alias>=count(<field>)` or sum/avg/min/max",
+            )?;
+            if alias == by || alias == RESERVED_SOURCE_ID || !aliases.insert(alias.clone()) {
+                return Err(RunDslError::new(
+                    "INVALID_DSL",
+                    format!("transform.aggregate[{index}].alias"),
+                    alias_position,
+                    format!("aggregate alias `{alias}` collides with another output field"),
+                    "choose an alias distinct from the group field, reserved field, and other aliases",
+                ));
+            }
+            self.expect_symbol(
+                TokenKind::Equals,
+                &format!("transform.aggregate[{index}].alias"),
+                "write aggregate specs as `<alias>=<function>(<field>)`",
+            )?;
+            let function_location = format!("transform.aggregate[{index}].function");
+            let (function, function_position) =
+                self.take_value(&function_location, "use one of count/sum/avg/min/max")?;
+            let function =
+                parse_aggregate_function(&function, &function_location, function_position)?;
+            self.expect_symbol(
+                TokenKind::LeftParen,
+                &format!("transform.aggregate[{index}].field"),
+                "wrap the aggregate field in parentheses",
+            )?;
+            let (field, field_position) = self.take_value(
+                &format!("transform.aggregate[{index}].field"),
+                "provide one field inside the aggregate parentheses",
+            )?;
+            reject_reserved_field(
+                &field,
+                &format!("transform.aggregate[{index}].field"),
+                field_position,
+            )?;
+            self.expect_symbol(
+                TokenKind::RightParen,
+                &format!("transform.aggregate[{index}].field"),
+                "close the aggregate field with `)`",
+            )?;
+            aggregations.push(AggregateAst {
+                alias,
+                function,
+                field,
+            });
+            if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                self.cursor += 1;
+                continue;
+            }
+            break;
+        }
+        Ok(RunTransformAst::Aggregate {
+            order_by: by.clone(),
+            by,
+            aggregations,
+        })
+    }
+
+    fn expect_symbol(
+        &mut self,
+        expected: TokenKind,
+        location: &str,
+        remediation: &str,
+    ) -> Result<(), RunDslError> {
+        if self.peek_kind() == Some(&expected) {
+            self.cursor += 1;
+            Ok(())
+        } else {
+            Err(self.error(
+                "INVALID_DSL",
+                location,
+                "aggregate punctuation is malformed",
+                remediation,
+            ))
+        }
     }
 
     fn parse_prepare_steps(&mut self) -> Result<Vec<PrepareStepAst>, RunDslError> {
@@ -220,10 +391,11 @@ impl Parser {
     }
 
     fn parse_filter(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
-        let (field, _) = self.take_value(
+        let (field, field_position) = self.take_value(
             &format!("prepare[{index}].field"),
             "use `filter <field> <eq|ne|lt|lte|gt|gte> <scalar>`",
         )?;
+        reject_reserved_field(&field, &format!("prepare[{index}].field"), field_position)?;
         let location = format!("prepare[{index}].predicate");
         let (predicate, position) = self.take_value(&location, "use one of eq/ne/lt/lte/gt/gte")?;
         Ok(PrepareStepAst::Filter {
@@ -234,27 +406,30 @@ impl Parser {
     }
 
     fn parse_rename(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
-        let (from, _) = self.take_value(
+        let (from, from_position) = self.take_value(
             &format!("prepare[{index}].from"),
             "use `rename <field> to <field>`",
         )?;
+        reject_reserved_field(&from, &format!("prepare[{index}].from"), from_position)?;
         self.expect_keyword(
             "to",
             &format!("prepare[{index}].to"),
             "use `rename <field> to <field>`",
         )?;
-        let (to, _) = self.take_value(
+        let (to, to_position) = self.take_value(
             &format!("prepare[{index}].to"),
             "provide the new field name after `to`",
         )?;
+        reject_reserved_field(&to, &format!("prepare[{index}].to"), to_position)?;
         Ok(PrepareStepAst::Rename { from, to })
     }
 
     fn parse_cast(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
-        let (field, _) = self.take_value(
+        let (field, field_position) = self.take_value(
             &format!("prepare[{index}].field"),
             "use `cast <field> as <type>`",
         )?;
+        reject_reserved_field(&field, &format!("prepare[{index}].field"), field_position)?;
         self.expect_keyword(
             "as",
             &format!("prepare[{index}].type"),
@@ -281,10 +456,11 @@ impl Parser {
     }
 
     fn parse_replace(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
-        let (field, _) = self.take_value(
+        let (field, field_position) = self.take_value(
             &format!("prepare[{index}].field"),
             "use `replace <field> <from> to <to>`",
         )?;
+        reject_reserved_field(&field, &format!("prepare[{index}].field"), field_position)?;
         let from = self.take_scalar(&format!("prepare[{index}].from"))?;
         self.expect_keyword(
             "to",
@@ -296,10 +472,11 @@ impl Parser {
     }
 
     fn parse_fill(&mut self, index: usize) -> Result<PrepareStepAst, RunDslError> {
-        let (field, _) = self.take_value(
+        let (field, field_position) = self.take_value(
             &format!("prepare[{index}].field"),
             "use `fill <field> with <scalar>`",
         )?;
+        reject_reserved_field(&field, &format!("prepare[{index}].field"), field_position)?;
         self.expect_keyword(
             "with",
             &format!("prepare[{index}].value"),
@@ -335,7 +512,9 @@ impl Parser {
         location: &str,
         stop_words: &[&str],
     ) -> Result<Vec<String>, RunDslError> {
-        let (first, _) = self.take_value(location, "provide at least one field name")?;
+        let (first, first_position) =
+            self.take_value(location, "provide at least one field name")?;
+        reject_reserved_field(&first, location, first_position)?;
         let mut fields = vec![first];
         loop {
             if self
@@ -356,7 +535,9 @@ impl Parser {
                 break;
             }
             self.cursor += 1;
-            let (field, _) = self.take_value(location, "provide a field name after the comma")?;
+            let (field, position) =
+                self.take_value(location, "provide a field name after the comma")?;
+            reject_reserved_field(&field, location, position)?;
             fields.push(field);
         }
         Ok(fields)
@@ -499,6 +680,50 @@ fn is_prepare_step_start(token: &Token) -> bool {
     ]
     .iter()
     .any(|operation| token.is_word(operation))
+}
+
+fn reject_reserved_field(field: &str, location: &str, position: usize) -> Result<(), RunDslError> {
+    if field == RESERVED_SOURCE_ID {
+        return Err(RunDslError::new(
+            "RESERVED_FIELD_CONFLICT",
+            location,
+            position,
+            format!("`{RESERVED_SOURCE_ID}` is reserved for source-id-field auto"),
+            "rename the input field or remove the explicit reserved-field reference",
+        ));
+    }
+    Ok(())
+}
+
+fn preserve_generated_source_id(steps: &mut [PrepareStepAst]) {
+    for step in steps {
+        if let PrepareStepAst::Select { fields } = step {
+            if !fields.iter().any(|field| field == RESERVED_SOURCE_ID) {
+                fields.push(RESERVED_SOURCE_ID.into());
+            }
+        }
+    }
+}
+
+fn parse_aggregate_function(
+    value: &str,
+    location: &str,
+    position: usize,
+) -> Result<AggregateFunctionAst, RunDslError> {
+    match value.to_ascii_lowercase().as_str() {
+        "count" => Ok(AggregateFunctionAst::Count),
+        "sum" => Ok(AggregateFunctionAst::Sum),
+        "avg" => Ok(AggregateFunctionAst::Avg),
+        "min" => Ok(AggregateFunctionAst::Min),
+        "max" => Ok(AggregateFunctionAst::Max),
+        _ => Err(RunDslError::new(
+            "INVALID_DSL",
+            location,
+            position,
+            format!("unsupported aggregate function `{value}`"),
+            "use one of count/sum/avg/min/max",
+        )),
+    }
 }
 
 fn parse_filter_predicate(
