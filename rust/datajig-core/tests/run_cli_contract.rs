@@ -472,6 +472,28 @@ fn delivery_must_not_overlap_run_control_state() {
 }
 
 #[test]
+fn delivery_rejects_a_non_directory_ancestor_before_plan_persistence() {
+    let root = TempDir::new();
+    fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+    fs::write(root.path().join("blocked"), b"not a directory").unwrap();
+
+    let output = run(
+        root.path(),
+        &[
+            "run",
+            "from rows.csv source-id-field id export id-field id",
+            "--output",
+            "blocked/delivery",
+        ],
+    );
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RUN_PATH_INVALID");
+    assert!(!root.path().join(".datajig").exists());
+}
+
+#[test]
 fn homogeneous_directory_format_is_inferred_into_the_canonical_plan() {
     let root = TempDir::new();
     fs::create_dir(root.path().join("rows")).unwrap();

@@ -207,3 +207,16 @@ fn renaming_the_source_identity_is_rejected_at_compile_time() {
     assert!(error.message.contains("source identity"));
     assert!(error.remediation.contains("must survive prepare"));
 }
+
+#[test]
+fn renaming_another_field_to_the_source_identity_is_rejected_at_compile_time() {
+    let error = compile_dsl(
+        "from input.csv source-id-field id prepare rename value to id export id-field id",
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_DSL");
+    assert_eq!(error.location, "prepare[0].to");
+    assert!(error.message.contains("source identity"));
+    assert!(error.remediation.contains("distinct"));
+}

@@ -337,6 +337,7 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
         _fail("consumption_plan must be an array; use [] when no consumer is requested")
     split_names = {item.split("=", 1)[0] for item in normalized_splits}
     consumption: list[dict[str, str]] = []
+    explicit_run_dirs: list[tuple[str, tuple[str, ...]]] = []
     for index, raw_consumer in enumerate(raw_consumption):
         consumer = _object(
             raw_consumer,
@@ -368,6 +369,15 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
                 f"consumption_plan[{index}].run_dir",
                 planning=True,
             )
+            run_dir_parts = PurePosixPath(run_dir).parts
+            for previous, previous_parts in explicit_run_dirs:
+                common = min(len(run_dir_parts), len(previous_parts))
+                if run_dir_parts[:common] == previous_parts[:common]:
+                    _fail(
+                        f"consumption_plan[{index}].run_dir {run_dir!r} duplicates or overlaps "
+                        f"explicit run_dir {previous!r}"
+                    )
+            explicit_run_dirs.append((run_dir, run_dir_parts))
             normalized_consumer["run_dir"] = run_dir
         consumption.append(normalized_consumer)
     consumption.sort(

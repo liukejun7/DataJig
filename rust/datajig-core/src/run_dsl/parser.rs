@@ -470,6 +470,15 @@ impl Parser {
             "provide the new field name after `to`",
         )?;
         reject_reserved_field(&to, &format!("prepare[{index}].to"), to_position)?;
+        if to == source_id {
+            return Err(RunDslError::new(
+                "INVALID_DSL",
+                format!("prepare[{index}].to"),
+                to_position,
+                format!("rename target `{to}` collides with the source identity field"),
+                "choose a rename target distinct from the declared source identity",
+            ));
+        }
         Ok(PrepareStepAst::Rename { from, to })
     }
 

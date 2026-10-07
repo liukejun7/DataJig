@@ -242,6 +242,34 @@ class PipelinePlanTests(DataJigCliTestCase):
         self.assertIn("string, boolean, integer, or null", result.payload["error"]["message"])
         self.assertFalse((project / "plan.json").exists())
 
+    def test_consumption_run_directories_must_be_disjoint(self) -> None:
+        for second_run_dir in ("runs/training", "runs/training/eval"):
+            with self.subTest(second_run_dir=second_run_dir):
+                project = self.root / second_run_dir.replace("/", "-")
+                config_text = CONFIG.replace(
+                    "    run_id: run-2026-10-06\n",
+                    "    run_id: run-2026-10-06\n"
+                    "    run_dir: runs/training\n"
+                    "  - consumer: pytorch\n"
+                    "    split: val\n"
+                    "    run_id: run-2026-10-07\n"
+                    f"    run_dir: {second_run_dir}\n",
+                )
+                config = self._project(project, config_text)
+
+                result = self.assert_cli_error(
+                    "INVALID_PIPELINE_CONFIG",
+                    "pipeline",
+                    "plan",
+                    "--config",
+                    config,
+                    "--plan",
+                    project / "plan.json",
+                )
+
+                self.assertIn("run_dir", result.payload["error"]["message"])
+                self.assertFalse((project / "plan.json").exists())
+
     def test_target_and_delivery_paths_reject_symlinked_parents(self) -> None:
         project = self.root / "project"
         config = self._project(project)

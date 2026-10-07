@@ -772,6 +772,7 @@ pub fn validate_run_consumption_target(
     validate_run_public_path(run_dir, "run_dir")?;
     let root = canonical_directory(root, "run root")?;
     reject_symlink_components(&root, run_dir, "run_dir")?;
+    reject_non_directory_ancestors(&root, run_dir, "run_dir")?;
     let target = root.join(run_dir);
     match fs::symlink_metadata(&target) {
         Ok(_) => Err(RunControlError::new(
@@ -792,6 +793,13 @@ pub fn validate_run_consumption_target(
             "choose an accessible new --run-dir below the current working directory",
         )),
     }
+}
+
+pub fn validate_run_output_target(root: &Path, output: &Path) -> Result<(), RunControlError> {
+    validate_run_public_path(output, "output")?;
+    let root = canonical_directory(root, "run root")?;
+    reject_symlink_components(&root, output, "output")?;
+    reject_non_directory_ancestors(&root, output, "output")
 }
 
 fn relative_path_comparison_key(path: &Path, field: &str) -> Result<Vec<String>, RunControlError> {
@@ -964,6 +972,37 @@ fn reject_symlink_components(
                         current.display()
                     ),
                     "use direct files and directories under the run root",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(io_error("RUN_PATH_INVALID", error)),
+        }
+    }
+    Ok(())
+}
+
+fn reject_non_directory_ancestors(
+    root: &Path,
+    relative: &Path,
+    field: &str,
+) -> Result<(), RunControlError> {
+    let components = relative
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect::<Vec<_>>();
+    let mut current = root.to_path_buf();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(RunControlError::new(
+                    "RUN_PATH_INVALID",
+                    format!(
+                        "{field} path crosses a non-directory ancestor at {}",
+                        current.display()
+                    ),
+                    format!("choose {field} below directories under the run root"),
                 ));
             }
             Ok(_) => {}
