@@ -323,8 +323,8 @@ def create_pipeline_plan(config_path: Path, plan_path: Path) -> dict[str, object
     }
 
     raw_consumption = data.get("consumption_plan")
-    if not isinstance(raw_consumption, list) or not raw_consumption:
-        _fail("consumption_plan must contain at least one consumer binding")
+    if not isinstance(raw_consumption, list):
+        _fail("consumption_plan must be an array; use [] when no consumer is requested")
     split_names = {item.split("=", 1)[0] for item in normalized_splits}
     consumption: list[dict[str, str]] = []
     for index, raw_consumer in enumerate(raw_consumption):

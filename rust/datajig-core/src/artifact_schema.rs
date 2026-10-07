@@ -655,7 +655,7 @@ fn pipeline_config_schema() -> Value {
             "transform":transform,
             "validate":validate,
             "export":export,
-            "consumption_plan":{"type":"array","minItems":1,"items":consumption}
+            "consumption_plan":{"type":"array","items":consumption}
         }),
     )
 }
@@ -991,6 +991,11 @@ fn prepare_recipe_schema() -> Value {
                 "properties": {"format": {"const": "jsonl"}}
             },
             "id_field": prepare_field_schema(),
+            "generated_source_id": {
+                "oneOf": [prepare_field_schema(), {"type": "null"}],
+                "default": null,
+                "description": "Optional deterministic source-row identity injected before preparation steps"
+            },
             "steps": {
                 "type": "array",
                 "maxItems": 64,

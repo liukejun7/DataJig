@@ -650,7 +650,67 @@ pub fn classify_run_output(
     if !output.exists() {
         return Ok(authorize_run(AuthorizationLevel::Safe, false));
     }
+    if is_committed_datajig_delivery(&output) {
+        return Ok(authorize_run(AuthorizationLevel::Dangerous, false));
+    }
     Ok(authorize_run(AuthorizationLevel::Fatal, false))
+}
+
+fn is_committed_datajig_delivery(output: &Path) -> bool {
+    let Ok(output_metadata) = fs::symlink_metadata(output) else {
+        return false;
+    };
+    if output_metadata.file_type().is_symlink() || !output_metadata.is_dir() {
+        return false;
+    }
+    let marker = output.join(".datajig-commit.json");
+    let receipt = output.join("pipeline-receipt.json");
+    let read_direct = |path: &Path| -> Option<Vec<u8>> {
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.len() > MAX_RUN_PLAN_BYTES as u64
+        {
+            return None;
+        }
+        fs::read(path).ok()
+    };
+    let Some(marker_bytes) = read_direct(&marker) else {
+        return false;
+    };
+    let Some(receipt_bytes) = read_direct(&receipt) else {
+        return false;
+    };
+    if marker_bytes != receipt_bytes {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&receipt_bytes) else {
+        return false;
+    };
+    if reject_duplicate_json_members(text).is_err() {
+        return false;
+    }
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let Some(object) = document.as_object() else {
+        return false;
+    };
+    let valid_id = |field: &str, prefix: &str| {
+        object
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| validate_prefixed_id(value, prefix, field).is_ok())
+    };
+    object.get("namespace").and_then(serde_json::Value::as_str) == Some("datajig")
+        && object
+            .get("pipeline_receipt_schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+        && object.get("status").and_then(serde_json::Value::as_str) == Some("committed")
+        && valid_id("pipeline_id", "pipe")
+        && valid_id("pipeline_receipt_id", "piped")
+        && valid_id("final_revision", "rev")
 }
 
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf, RunControlError> {

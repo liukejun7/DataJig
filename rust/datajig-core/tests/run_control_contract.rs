@@ -3,6 +3,7 @@ use datajig_core::{
     classify_run_output, compile_dsl, create_run_plan, derive_run_identities,
     fingerprint_run_source, load_run_plan_for_resume, persist_run_plan,
 };
+use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -225,6 +226,32 @@ fn fatal_output_preflight_never_creates_run_state() {
     let error = persist_run_plan(root.path(), &plan).unwrap_err();
     assert_eq!(error.code, "RUN_AUTHORIZATION_REJECTED");
     assert!(!root.path().join(".datajig").exists());
+}
+
+#[test]
+fn committed_datajig_delivery_requires_explicit_update_authorization() {
+    let root = TempDir::new();
+    let delivery = root.path().join("bundle");
+    fs::create_dir(&delivery).unwrap();
+    let receipt = serde_json::to_vec(&json!({
+        "namespace": "datajig",
+        "pipeline_receipt_schema_version": 1,
+        "pipeline_id": format!("pipe_{}", "a".repeat(64)),
+        "pipeline_receipt_id": format!("piped_{}", "b".repeat(64)),
+        "final_revision": format!("rev_{}", "c".repeat(64)),
+        "status": "committed"
+    }))
+    .unwrap();
+    fs::write(delivery.join(".datajig-commit.json"), &receipt).unwrap();
+    fs::write(delivery.join("pipeline-receipt.json"), &receipt).unwrap();
+
+    let decision = classify_run_output(root.path(), Path::new("bundle"), "intent_any").unwrap();
+
+    assert_eq!(decision.level, AuthorizationLevel::Dangerous);
+    assert_eq!(decision.status, AuthorizationStatus::ConfirmationRequired);
+    fs::write(delivery.join("pipeline-receipt.json"), b"{}").unwrap();
+    let tampered = classify_run_output(root.path(), Path::new("bundle"), "intent_any").unwrap();
+    assert_eq!(tampered.level, AuthorizationLevel::Fatal);
 }
 
 #[cfg(unix)]
