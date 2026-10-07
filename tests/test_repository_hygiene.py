@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -100,7 +101,47 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         workflow = (
             REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("python -m pip install -e '.[dev,duckdb]'", workflow)
+        self.assertIn("requirements/ci-duckdb.txt", workflow)
+        self.assertIn("python -m pip install --no-build-isolation --no-deps -e .", workflow)
+
+    def test_workflows_install_centralized_exact_python_requirements(self) -> None:
+        ci = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        wheels = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "wheels.yml"
+        ).read_text(encoding="utf-8")
+
+        expected = {
+            "requirements/ci.txt",
+            "requirements/ci-duckdb.txt",
+            "requirements/wheels-linux.txt",
+            "requirements/wheels-macos.txt",
+        }
+        for relative in expected:
+            path = REPOSITORY_ROOT / relative
+            self.assertTrue(path.is_file(), relative)
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or stripped.startswith("-r "):
+                    continue
+                self.assertRegex(
+                    stripped,
+                    r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^\s]+$",
+                    f"dependency is not exactly pinned in {relative}: {stripped}",
+                )
+
+        self.assertIn("python -m pip install -r requirements/ci.txt", ci)
+        self.assertIn("python -m pip install -r requirements/ci-duckdb.txt", ci)
+        self.assertGreaterEqual(
+            ci.count("python -m pip install --no-build-isolation --no-deps -e ."),
+            3,
+        )
+        self.assertIn("python -m pip install -r requirements/wheels-linux.txt", wheels)
+        self.assertIn("python -m pip install -r requirements/wheels-macos.txt", wheels)
+        self.assertGreaterEqual(wheels.count("python -m build --no-isolation"), 2)
+        self.assertIsNone(re.search(r"pip install[^\n]*[~><]=?", ci))
+        self.assertIsNone(re.search(r"pip install[^\n]*[~><]=?", wheels))
 
     def test_ci_parallelizes_real_data_suites_and_python_compatibility(self) -> None:
         workflow = (

@@ -1,0 +1,12 @@
+blake3==1.0.10
+ImageHash==4.3.2
+Jinja2==3.1.6
+numpy==2.3.5
+Pillow==12.3.0
+PyYAML==6.0.3
+scipy==1.17.0
+editables==0.5
+hatchling==1.32.4
+mypy==1.20.2
+ruff==0.16.10
+types-PyYAML==6.0.12.20260906

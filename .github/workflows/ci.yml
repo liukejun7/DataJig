@@ -70,7 +70,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install development dependencies
-        run: python -m pip install -e '.[dev]'
+        run: |
+          python -m pip install -r requirements/ci.txt
+          python -m pip install --no-build-isolation --no-deps -e .
       - name: Lint
         run: python -m ruff check .
       - name: Type check
@@ -101,7 +103,9 @@ jobs:
       - name: Activate native binary
         run: chmod +x rust/target/debug/datajig-core
       - name: Install Python package
-        run: python -m pip install -e '.[dev,duckdb]'
+        run: |
+          python -m pip install -r requirements/ci-duckdb.txt
+          python -m pip install --no-build-isolation --no-deps -e .
       - name: Run real-data integration suite
         env:
           DATAJIG_NATIVE: ${{ github.workspace }}/rust/target/debug/datajig-core
@@ -131,7 +135,9 @@ jobs:
       - name: Activate native binary
         run: chmod +x rust/target/debug/datajig-core
       - name: Install runtime and test dependencies
-        run: python -m pip install -e '.[dev,duckdb]'
+        run: |
+          python -m pip install -r requirements/ci-duckdb.txt
+          python -m pip install --no-build-isolation --no-deps -e .
       - name: Run cross-version data workflows
         env:
           DATAJIG_NATIVE: ${{ github.workspace }}/rust/target/debug/datajig-core
