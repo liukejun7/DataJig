@@ -35,6 +35,62 @@ class WorkspaceWorkflowTests(DataJigCliTestCase):
         self.assertEqual(change_id, checked["artifact"]["change_id"])
         self.assertEqual(changeset_id, checked["artifact"]["changeset_id"])
 
+    def test_changeset_stage_resolves_the_unique_active_change_alias(self) -> None:
+        dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
+        change_id, _ = self.begin_change("stage-alias")
+        self.write_jsonl(dataset, [{"id": "alpha", "score": 2}])
+
+        staged = self.run_cli(
+            "changeset-stage",
+            "--state",
+            self.state,
+            "--change",
+            "@active",
+        ).payload["artifact"]
+
+        self.assertEqual(change_id, staged["change_id"])
+        self.assertTrue(staged["changeset_id"].startswith("changeset_"))
+
+    def test_explicit_changeset_disambiguates_its_active_change_alias(self) -> None:
+        dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
+        selected_change, _ = self.begin_change("selected-change")
+        self.begin_change("other-change")
+        self.write_jsonl(dataset, [{"id": "alpha", "score": 2}])
+        changeset_id, _ = self.stage_change(selected_change)
+
+        checked = self.run_cli(
+            "check",
+            "--state",
+            self.state,
+            "--change",
+            "@active",
+            "--changeset",
+            changeset_id,
+        ).payload["artifact"]
+
+        self.assertEqual(selected_change, checked["change_id"])
+        self.assertEqual(changeset_id, checked["changeset_id"])
+
+    def test_unique_staged_pair_disambiguates_two_active_change_aliases(self) -> None:
+        dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
+        selected_change, _ = self.begin_change("selected-pair")
+        self.begin_change("unstaged-change")
+        self.write_jsonl(dataset, [{"id": "alpha", "score": 2}])
+        changeset_id, _ = self.stage_change(selected_change)
+
+        checked = self.run_cli(
+            "check",
+            "--state",
+            self.state,
+            "--change",
+            "@active",
+            "--changeset",
+            "@latest",
+        ).payload["artifact"]
+
+        self.assertEqual(selected_change, checked["change_id"])
+        self.assertEqual(changeset_id, checked["changeset_id"])
+
     def test_unique_active_changeset_needs_no_ids_through_seal(self) -> None:
         dataset, _ = self.initialize_jsonl([{"id": "alpha", "score": 1}])
         change_id, _ = self.begin_change("missing-binding")

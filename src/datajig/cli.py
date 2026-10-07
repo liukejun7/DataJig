@@ -145,12 +145,15 @@ deterministic id in transform SQL before DataJig versions it.""",
         nargs="?",
         choices=(
             "jsonl-field-patch",
+            "jsonl-quality-policy",
             "pipeline-config",
             "prepare-recipe",
             "repository-integration",
             "subset-view",
             "training-consumption-plan",
             "training-consumption-receipt",
+            "transform-plan",
+            "transform-receipt",
         ),
     )
 

@@ -1125,6 +1125,29 @@ pub fn resolve_changeset_selectors(
     )
 }
 
+pub fn resolve_change_selector(state: &Path, change_selector: &str) -> Result<String> {
+    if !is_context_selector(change_selector) {
+        return Ok(change_selector.into());
+    }
+    let (state_dir, workspace) = load_workspace_compatible(state)?;
+    let store = WorkspaceStore::open(&state_dir)?;
+    let head = store.load_refs()?.head().to_owned();
+    let candidates = active_change_declarations(&store, &workspace, &head)?;
+    if candidates.len() != 1 {
+        return Err(InvalidArgumentError::new(format!(
+            "cannot resolve --change {change_selector}: found {} compatible active change declarations; pass one explicit chg_... ID",
+            candidates.len()
+        ))
+        .into());
+    }
+    Ok(candidates
+        .into_iter()
+        .next()
+        .expect("one candidate")
+        .change_id()
+        .to_owned())
+}
+
 pub fn resolve_optional_changeset_context(
     state: &Path,
     change_selector: Option<&str>,
@@ -1157,36 +1180,94 @@ fn resolve_changeset_selectors_in_workspace(
 ) -> Result<(String, String)> {
     let store = WorkspaceStore::open(state_dir)?;
     let head = store.load_refs()?.head().to_owned();
-    let change = if is_context_selector(change_selector) {
+    let change_is_alias = is_context_selector(change_selector);
+    let changeset_is_alias = is_context_selector(changeset_selector);
+
+    if change_is_alias && !changeset_is_alias {
+        let changeset = store.load_changeset(changeset_selector)?;
+        if !changeset_is_compatible(&changeset, workspace, &head) {
+            return Err(InvalidArgumentError::new(format!(
+                "--changeset {changeset_selector} is not compatible with the active workspace HEAD"
+            ))
+            .into());
+        }
+        let change = store.load_change_declaration(changeset.change_id())?;
+        if !change_is_active(&change, workspace, &head) {
+            return Err(InvalidArgumentError::new(format!(
+                "--changeset {changeset_selector} does not belong to an active change declaration"
+            ))
+            .into());
+        }
+        return Ok((
+            change.change_id().to_owned(),
+            changeset.changeset_id().to_owned(),
+        ));
+    }
+
+    let active_changes = if change_is_alias {
+        active_change_declarations(&store, workspace, &head)?
+    } else {
+        vec![store.load_change_declaration(change_selector)?]
+    };
+
+    if change_is_alias && changeset_is_alias {
+        if active_changes.is_empty() {
+            return Err(InvalidArgumentError::new(format!(
+                "cannot resolve --change {change_selector}: found 0 compatible active change declarations; pass one explicit chg_... ID"
+            ))
+            .into());
+        }
+        let active_ids = active_changes
+            .iter()
+            .map(ChangeDeclaration::change_id)
+            .collect::<std::collections::BTreeSet<_>>();
         let candidates = store
-            .list_change_declarations()?
+            .list_changesets()?
             .into_iter()
             .filter(|candidate| {
-                candidate.dataset_id() == workspace.dataset_id
-                    && candidate.adapter() == workspace.adapter
-                    && candidate.base_revision_id() == head
+                active_ids.contains(candidate.change_id())
+                    && changeset_is_compatible(candidate, workspace, &head)
             })
             .collect::<Vec<_>>();
-        if candidates.len() != 1 {
+        if candidates.is_empty() && active_changes.len() != 1 {
             return Err(InvalidArgumentError::new(format!(
                 "cannot resolve --change {change_selector}: found {} compatible active change declarations; pass one explicit chg_... ID",
+                active_changes.len()
+            ))
+            .into());
+        }
+        if candidates.is_empty() {
+            return Err(InvalidArgumentError::new(format!(
+                "cannot resolve --changeset {changeset_selector}: found 0 compatible staged changesets for {}; run changeset-stage first",
+                active_changes[0].change_id()
+            ))
+            .into());
+        }
+        if candidates.len() != 1 {
+            return Err(InvalidArgumentError::new(format!(
+                "cannot resolve {change_selector}/{changeset_selector}: found {} compatible staged change pairs; pass explicit chg_... and changeset_... IDs",
                 candidates.len()
             ))
             .into());
         }
-        candidates.into_iter().next().expect("one candidate")
-    } else {
-        store.load_change_declaration(change_selector)?
-    };
-    let changeset = if is_context_selector(changeset_selector) {
+        let changeset = candidates.into_iter().next().expect("one candidate");
+        return Ok((
+            changeset.change_id().to_owned(),
+            changeset.changeset_id().to_owned(),
+        ));
+    }
+
+    let change = active_changes
+        .into_iter()
+        .next()
+        .expect("one explicit change");
+    let changeset = if changeset_is_alias {
         let candidates = store
             .list_changesets()?
             .into_iter()
             .filter(|candidate| {
                 candidate.change_id() == change.change_id()
-                    && candidate.dataset_id() == workspace.dataset_id
-                    && candidate.adapter() == workspace.adapter
-                    && candidate.base_revision_id() == head
+                    && changeset_is_compatible(candidate, workspace, &head)
             })
             .collect::<Vec<_>>();
         if candidates.len() != 1 {
@@ -1205,6 +1286,38 @@ fn resolve_changeset_selectors_in_workspace(
         change.change_id().to_owned(),
         changeset.changeset_id().to_owned(),
     ))
+}
+
+fn active_change_declarations(
+    store: &WorkspaceStore,
+    workspace: &WorkspaceConfig,
+    head: &str,
+) -> Result<Vec<ChangeDeclaration>> {
+    Ok(store
+        .list_change_declarations()?
+        .into_iter()
+        .filter(|candidate| change_is_active(candidate, workspace, head))
+        .collect())
+}
+
+fn change_is_active(
+    candidate: &ChangeDeclaration,
+    workspace: &WorkspaceConfig,
+    head: &str,
+) -> bool {
+    candidate.dataset_id() == workspace.dataset_id
+        && candidate.adapter() == workspace.adapter
+        && candidate.base_revision_id() == head
+}
+
+fn changeset_is_compatible(
+    candidate: &DatasetChangeset,
+    workspace: &WorkspaceConfig,
+    head: &str,
+) -> bool {
+    candidate.dataset_id() == workspace.dataset_id
+        && candidate.adapter() == workspace.adapter
+        && candidate.base_revision_id() == head
 }
 
 fn is_context_selector(value: &str) -> bool {
@@ -3091,8 +3204,8 @@ fn capture_transferable_metadata(
     use std::os::unix::fs::MetadataExt;
 
     let mut names = vec![0_u8; 1024 * 1024];
-    let name_bytes = rustix::fs::flistxattr(file, &mut names)
-        .context("cannot list JSONL patch source extended attributes")?;
+    let name_bytes =
+        optional_xattr_list_size(rustix::fs::flistxattr(file, &mut names))?.unwrap_or_default();
     names.truncate(name_bytes);
     let mut xattrs = Vec::new();
     for raw_name in names.split_inclusive(|byte| *byte == 0) {
@@ -3120,6 +3233,41 @@ fn capture_transferable_metadata(
         mtime_nsec: metadata.mtime_nsec(),
         xattrs,
     })
+}
+
+#[cfg(unix)]
+fn optional_xattr_list_size(result: rustix::io::Result<usize>) -> Result<Option<usize>> {
+    match result {
+        Ok(size) => Ok(Some(size)),
+        Err(error)
+            if error == rustix::io::Errno::NOTSUP || error == rustix::io::Errno::OPNOTSUPP =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error).context("cannot list JSONL patch source extended attributes"),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod xattr_tests {
+    use super::optional_xattr_list_size;
+
+    #[test]
+    fn unsupported_xattr_filesystems_have_no_transferable_xattrs() {
+        assert_eq!(
+            None,
+            optional_xattr_list_size(Err(rustix::io::Errno::NOTSUP)).unwrap()
+        );
+        assert_eq!(
+            None,
+            optional_xattr_list_size(Err(rustix::io::Errno::OPNOTSUPP)).unwrap()
+        );
+    }
+
+    #[test]
+    fn other_xattr_failures_remain_fatal() {
+        assert!(optional_xattr_list_size(Err(rustix::io::Errno::IO)).is_err());
+    }
 }
 
 #[cfg(unix)]

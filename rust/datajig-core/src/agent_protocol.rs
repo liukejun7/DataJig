@@ -103,7 +103,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         command(
             "artifact-schema",
             "Return a machine-readable JSON Schema and canonical example for a DataJig input artifact.",
-            "datajig artifact-schema [jsonl-field-patch|pipeline-config|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]",
+            "datajig artifact-schema [jsonl-field-patch|jsonl-quality-policy|pipeline-config|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]",
             read_only(vec![], all_platforms()),
             vec![input(
                 "artifact",
@@ -184,7 +184,7 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
         command(
             "changeset-stage",
             "Capture the current full dataset as an immutable staged changeset.",
-            "datajig changeset-stage --change <chg_ID> [--state <DIR>] [--threads <1..8>]",
+            "datajig changeset-stage --change <chg_ID|@active|@latest> [--state <DIR>] [--threads <1..8>]",
             writes(
                 vec!["read_dataset", "read_workspace", "write_changeset_object"],
                 unix_platforms(),
@@ -192,11 +192,11 @@ pub fn command_catalog() -> Vec<CommandDescriptor> {
             vec![
                 input(
                     "change",
-                    "content_id:chg",
+                    "content_id:chg|selector:@active|@latest",
                     true,
                     false,
                     None,
-                    "Change declaration returned by changeset-begin.",
+                    "Change declaration returned by changeset-begin; @active and @latest resolve only when one declaration matches the current workspace HEAD.",
                 ),
                 input(
                     "state",
@@ -2061,7 +2061,7 @@ pub fn render_agent_skill() -> String {
         "## Operating rules\n\n\
 - Run `datajig capabilities` before relying on an optional feature.\n\
 - Run `datajig describe [command]` for the versioned input, output, effect, platform, and exit-code contract.\n\
-- Run `datajig artifact-schema [jsonl-field-patch|pipeline-config|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]` instead of guessing an input artifact shape.\n\
+- Run `datajig artifact-schema [jsonl-field-patch|jsonl-quality-policy|pipeline-config|prepare-recipe|repository-integration|subset-view|training-consumption-plan|training-consumption-receipt|transform-plan|transform-receipt]` instead of guessing an input artifact shape.\n\
 - Use `repository-install` to publish one version-matched Skill, CI workflow, hook, and content-addressed lock; use `repository-check` before agent work and in CI to reject drift or dirty bound workspaces.\n\
 - Start every local table with `datajig inspect`: JSONL returns workspace readiness; CSV and flat Parquet return a privacy-safe profile and inline preparation recipe template.\n\
 - For CSV, flat Parquet, or JSONL data preparation, pass one file, a recursive local directory, or a verified `datajig.hf-import.json`; use recipe `include`/`ignore` globs for local or imported shards, compose ordered transformations, inspect the bounded `prepare-plan`, then pass the exact returned `prep_...` identity to `prepare-apply`.\n\

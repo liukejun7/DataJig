@@ -209,9 +209,9 @@ pub use workspace::{
     initialize_jsonl_workspace_with_policy, initialize_jsonl_workspace_with_receipt,
     initialize_workspace, is_patchable_quality_code, locate_changeset_finding,
     materialize_revision, plan_changeset, plan_workspace, preview_jsonl_patch,
-    resolve_changeset_selectors, resolve_optional_changeset_context, revision_log, seal_changeset,
-    seal_changeset_detached, seal_workspace, stage_changeset, status_changeset, status_workspace,
-    undo_jsonl_patch,
+    resolve_change_selector, resolve_changeset_selectors, resolve_optional_changeset_context,
+    revision_log, seal_changeset, seal_changeset_detached, seal_workspace, stage_changeset,
+    status_changeset, status_workspace, undo_jsonl_patch,
 };
 pub use workspace_store::{WorkspaceLock, WorkspaceRefs, WorkspaceStore};
 

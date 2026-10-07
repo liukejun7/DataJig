@@ -75,6 +75,10 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("datajig artifact-schema prepare-recipe", prepare.stdout)
         self.assertIn('"namespace":"datajig"', prepare.stdout)
 
+        init = self.run_help("init")
+        self.assertEqual(0, init.returncode, init.stderr)
+        self.assertIn("datajig artifact-schema jsonl-quality-policy", init.stdout)
+
     def test_top_level_help_lists_transform_workflow(self) -> None:
         completed = self.run_help("")
         self.assertEqual(0, completed.returncode, completed.stderr)
@@ -99,6 +103,38 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("transform:", completed.stdout)
         self.assertIn("consumption_plan:", completed.stdout)
         self.assertIn("delivery.output must be a relative path", completed.stdout)
+
+    def test_python_entrypoint_exposes_every_native_artifact_schema(self) -> None:
+        native_catalog = subprocess.run(
+            (str(self.native), "artifact-schema"),
+            cwd=REPOSITORY_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(0, native_catalog.returncode, native_catalog.stderr)
+        names = json.loads(native_catalog.stdout)["artifact"]["names"]
+        artifact_help = self.run_help("artifact-schema")
+        self.assertEqual(0, artifact_help.returncode, artifact_help.stderr)
+        for name in names:
+            self.assertIn(name, artifact_help.stdout)
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        environment["DATAJIG_NATIVE"] = str(self.native)
+
+        for name in names:
+            completed = subprocess.run(
+                ("python", "-m", "datajig.cli", "artifact-schema", name),
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(0, completed.returncode, f"{name}: {completed.stderr}")
+            self.assertEqual(name, json.loads(completed.stdout)["artifact"]["name"])
 
     def test_capabilities_publish_python_pipeline_contract(self) -> None:
         environment = os.environ.copy()

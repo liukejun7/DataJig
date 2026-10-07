@@ -1,6 +1,7 @@
 use datajig_core::{
-    ARTIFACT_SCHEMA_VERSION, JsonlPatchRequest, JsonlSubsetRecipe, RepositoryIntegrationLock,
-    TransformPlan, TransformReceipt, artifact_schema, artifact_schema_names,
+    ARTIFACT_SCHEMA_VERSION, JsonlPatchRequest, JsonlQualityPolicy, JsonlSubsetRecipe,
+    RepositoryIntegrationLock, TransformPlan, TransformReceipt, artifact_schema,
+    artifact_schema_names,
 };
 use serde_json::json;
 use std::fs;
@@ -86,6 +87,52 @@ fn published_patch_example_is_accepted_by_the_runtime_parser() {
     let _ = fs::remove_file(&path);
 
     result.expect("published example should remain executable");
+}
+
+#[test]
+fn published_jsonl_quality_policy_is_complete_and_runtime_accepted() {
+    let document = artifact_schema("jsonl-quality-policy").expect("schema should resolve");
+    let payload = serde_json::to_string(&document["example"]).expect("example should serialize");
+
+    JsonlQualityPolicy::from_json(&payload)
+        .expect("published quality policy example should remain executable");
+
+    let schema = &document["schema"];
+    let field = &schema["properties"]["fields"]["additionalProperties"];
+    assert_eq!(false, schema["additionalProperties"]);
+    assert_eq!(
+        json!(["changed_only", "full"]),
+        schema["properties"]["mode"]["enum"]
+    );
+    assert_eq!(256, schema["properties"]["fields"]["maxProperties"]);
+    assert_eq!(false, field["additionalProperties"]);
+    assert_eq!("regex", field["properties"]["pattern"]["format"]);
+    assert_eq!(
+        "rust-regex-1",
+        field["properties"]["pattern"]["x-datajig-regex-dialect"]
+    );
+    assert_eq!(true, field["x-datajig-minimum-must-not-exceed-maximum"]);
+    assert_eq!(
+        Some(8),
+        field["allOf"].as_array().map(Vec::len),
+        "schema must publish runtime type dependencies for ranges, regex, enum, and uniqueness"
+    );
+    assert_eq!(
+        64,
+        schema["properties"]["fields"]["x-datajig-max-regex-fields"]
+    );
+    assert_eq!(
+        4,
+        schema["properties"]["fields"]["x-datajig-max-unique-fields"]
+    );
+    for property in [
+        "required", "nullable", "types", "enum", "minimum", "maximum", "pattern", "unique",
+    ] {
+        assert!(
+            field["properties"].get(property).is_some(),
+            "quality policy field schema should publish {property}"
+        );
+    }
 }
 
 #[test]

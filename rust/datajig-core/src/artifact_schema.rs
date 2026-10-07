@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 pub const ARTIFACT_SCHEMA_VERSION: u8 = 1;
 type ArtifactSchemaFactory = fn() -> Value;
 
-const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 9] = [
+const ARTIFACT_SCHEMA_REGISTRY: [(&str, ArtifactSchemaFactory); 10] = [
     ("jsonl-field-patch", jsonl_field_patch_artifact),
+    ("jsonl-quality-policy", jsonl_quality_policy_artifact),
     ("pipeline-config", pipeline_config_artifact),
     ("prepare-recipe", prepare_recipe_artifact),
     ("repository-integration", repository_integration_artifact),
@@ -394,6 +395,144 @@ fn jsonl_field_patch_artifact() -> Value {
             "after": {"present": true, "value": 0.9}
         }
     })
+}
+
+fn jsonl_quality_policy_artifact() -> Value {
+    json!({
+        "name": "jsonl-quality-policy",
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "media_type": "application/json",
+        "schema": jsonl_quality_policy_schema(),
+        "example": {
+            "namespace": "datajig",
+            "schema_version": 1,
+            "adapter": "jsonl",
+            "mode": "changed_only",
+            "fields": {
+                "score": {
+                    "required": true,
+                    "nullable": false,
+                    "types": ["number"],
+                    "minimum": 0,
+                    "maximum": 1
+                }
+            }
+        }
+    })
+}
+
+fn jsonl_quality_policy_schema() -> Value {
+    let field_policy = strict_object(
+        &[],
+        json!({
+            "required":{"type":"boolean","default":false},
+            "nullable":{"type":"boolean","default":true},
+            "types":{
+                "type":"array",
+                "maxItems":5,
+                "uniqueItems":true,
+                "items":{"enum":["array","boolean","number","object","string"]},
+                "default":[]
+            },
+            "enum":{
+                "type":"array",
+                "minItems":1,
+                "maxItems":crate::jsonl_policy::MAX_JSONL_POLICY_ENUM_MEMBERS,
+                "uniqueItems":true,
+                "items":{"type":["boolean","number","string"]}
+            },
+            "minimum":{"type":"number"},
+            "maximum":{"type":"number"},
+            "pattern":{
+                "type":"string",
+                "format":"regex",
+                "x-datajig-regex-dialect":"rust-regex-1",
+                "maxLength":crate::jsonl_policy::MAX_JSONL_POLICY_PATTERN_BYTES,
+                "x-datajig-max-utf8-bytes":crate::jsonl_policy::MAX_JSONL_POLICY_PATTERN_BYTES
+            },
+            "unique":{"type":"boolean","default":false}
+        }),
+    );
+    let mut field_policy = field_policy;
+    field_policy["allOf"] = json!([
+        {
+            "if":{"required":["minimum"]},
+            "then":{
+                "required":["types"],
+                "properties":{"types":{"contains":{"const":"number"}}}
+            }
+        },
+        {
+            "if":{"required":["maximum"]},
+            "then":{
+                "required":["types"],
+                "properties":{"types":{"contains":{"const":"number"}}}
+            }
+        },
+        {
+            "if":{"required":["pattern"]},
+            "then":{
+                "required":["types"],
+                "properties":{"types":{"contains":{"const":"string"}}}
+            }
+        },
+        {
+            "if":{"required":["enum"]},
+            "then":{
+                "required":["types"],
+                "properties":{"types":{"minItems":1}}
+            }
+        },
+        {
+            "if":{"properties":{"enum":{"contains":{"type":"boolean"}}},"required":["enum"]},
+            "then":{"properties":{"types":{"contains":{"const":"boolean"}}}}
+        },
+        {
+            "if":{"properties":{"enum":{"contains":{"type":"number"}}},"required":["enum"]},
+            "then":{"properties":{"types":{"contains":{"const":"number"}}}}
+        },
+        {
+            "if":{"properties":{"enum":{"contains":{"type":"string"}}},"required":["enum"]},
+            "then":{"properties":{"types":{"contains":{"const":"string"}}}}
+        },
+        {
+            "if":{"properties":{"unique":{"const":true}},"required":["unique"]},
+            "then":{
+                "required":["types"],
+                "properties":{
+                    "types":{
+                        "minItems":1,
+                        "items":{"enum":["boolean","number","string"]}
+                    }
+                }
+            }
+        }
+    ]);
+    field_policy["x-datajig-minimum-must-not-exceed-maximum"] = json!(true);
+    strict_object(
+        &["namespace", "schema_version", "adapter", "mode", "fields"],
+        json!({
+            "namespace":{"const":"datajig"},
+            "schema_version":{"const":crate::JSONL_QUALITY_POLICY_SCHEMA_VERSION},
+            "adapter":{"const":"jsonl"},
+            "mode":{"enum":["changed_only","full"]},
+            "fields":{
+                "type":"object",
+                "minProperties":1,
+                "maxProperties":crate::jsonl_policy::MAX_JSONL_POLICY_FIELDS,
+                "propertyNames":{
+                    "type":"string",
+                    "minLength":1,
+                    "maxLength":crate::MAX_JSONL_FIELD_NAME_BYTES,
+                    "x-datajig-max-utf8-bytes":crate::MAX_JSONL_FIELD_NAME_BYTES
+                },
+                "additionalProperties":field_policy,
+                "x-datajig-max-regex-fields":crate::jsonl_policy::MAX_JSONL_POLICY_REGEX_FIELDS,
+                "x-datajig-max-unique-fields":crate::jsonl_policy::MAX_JSONL_POLICY_UNIQUE_FIELDS
+            },
+            "policy_id":content_id_schema("policy")
+        }),
+    )
 }
 
 fn pipeline_config_artifact() -> Value {
