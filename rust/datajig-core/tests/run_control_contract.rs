@@ -1,7 +1,37 @@
 use datajig_core::{
     AuthorizationLevel, AuthorizationStatus, RunConsumptionBinding, RunPlanBinding, authorize_run,
-    compile_dsl, derive_run_identities,
+    classify_run_output, compile_dsl, create_run_plan, derive_run_identities,
+    fingerprint_run_source, load_run_plan_for_resume, persist_run_plan,
 };
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "datajig-run-control-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 fn compiled() -> datajig_core::CompiledRunTask {
     compile_dsl("from rows.csv source-id-field id export id-field id").unwrap()
@@ -98,4 +128,121 @@ fn identity_inputs_are_bounded_and_actionable() {
         assert_eq!(error.code, "INVALID_RUN_PLAN");
         assert!(error.message.contains(message));
     }
+}
+
+#[test]
+fn source_fingerprints_bind_bytes_and_canonical_relative_membership() {
+    let root = TempDir::new();
+    fs::create_dir(root.path().join("rows")).unwrap();
+    fs::write(root.path().join("rows/a.csv"), b"id,value\n1,a\n").unwrap();
+    fs::write(root.path().join("rows/b.csv"), b"id,value\n2,b\n").unwrap();
+
+    let first = fingerprint_run_source(root.path(), Path::new("rows")).unwrap();
+    let repeated = fingerprint_run_source(root.path(), Path::new("rows")).unwrap();
+    assert_eq!(first, repeated);
+    assert!(first.starts_with("source_"));
+
+    fs::write(root.path().join("rows/b.csv"), b"id,value\n2,changed\n").unwrap();
+    assert_ne!(
+        first,
+        fingerprint_run_source(root.path(), Path::new("rows")).unwrap()
+    );
+}
+
+#[test]
+fn plans_use_stable_workspaces_and_distinct_attempt_directories() {
+    let root = TempDir::new();
+    let task = compiled();
+    let first = create_run_plan(
+        &task,
+        &binding("source_aaa"),
+        "attempt-one",
+        AuthorizationLevel::Safe,
+        false,
+    )
+    .unwrap();
+    let second = create_run_plan(
+        &task,
+        &binding("source_aaa"),
+        "attempt-two",
+        AuthorizationLevel::Safe,
+        false,
+    )
+    .unwrap();
+
+    let first_layout = persist_run_plan(root.path(), &first).unwrap();
+    let second_layout = persist_run_plan(root.path(), &second).unwrap();
+    assert_eq!(first_layout.workspace, second_layout.workspace);
+    assert_ne!(first_layout.attempt, second_layout.attempt);
+    assert!(first_layout.plan.is_file());
+    assert!(second_layout.plan.is_file());
+    assert_eq!(
+        load_run_plan_for_resume(root.path(), &first.attempt_id, &first.plan_id).unwrap(),
+        first
+    );
+}
+
+#[test]
+fn resume_rejects_wrong_acceptance_and_tampered_plan_files() {
+    let root = TempDir::new();
+    let plan = create_run_plan(
+        &compiled(),
+        &binding("source_aaa"),
+        "attempt-one",
+        AuthorizationLevel::Safe,
+        false,
+    )
+    .unwrap();
+    let layout = persist_run_plan(root.path(), &plan).unwrap();
+
+    let wrong = load_run_plan_for_resume(root.path(), &plan.attempt_id, "plan_wrong").unwrap_err();
+    assert_eq!(wrong.code, "RUN_PLAN_MISMATCH");
+
+    let mut payload = fs::read_to_string(&layout.plan).unwrap();
+    payload = payload.replace("source_aaa", "source_tampered");
+    fs::write(&layout.plan, payload).unwrap();
+    let tampered =
+        load_run_plan_for_resume(root.path(), &plan.attempt_id, &plan.plan_id).unwrap_err();
+    assert_eq!(tampered.code, "RUN_PLAN_CORRUPT");
+}
+
+#[test]
+fn fatal_output_preflight_never_creates_run_state() {
+    let root = TempDir::new();
+    fs::create_dir(root.path().join("bundle")).unwrap();
+    fs::write(root.path().join("bundle/user.txt"), b"mine").unwrap();
+    let decision = classify_run_output(root.path(), Path::new("bundle"), "intent_any").unwrap();
+    assert_eq!(decision.level, AuthorizationLevel::Fatal);
+
+    let plan = create_run_plan(
+        &compiled(),
+        &binding("source_aaa"),
+        "attempt-one",
+        decision.level,
+        true,
+    )
+    .unwrap();
+    let error = persist_run_plan(root.path(), &plan).unwrap_err();
+    assert_eq!(error.code, "RUN_AUTHORIZATION_REJECTED");
+    assert!(!root.path().join(".datajig").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn source_and_output_symlinks_fail_closed() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new();
+    let outside = TempDir::new();
+    fs::write(outside.path().join("rows.csv"), b"id\n1\n").unwrap();
+    symlink(
+        outside.path().join("rows.csv"),
+        root.path().join("rows.csv"),
+    )
+    .unwrap();
+    assert!(fingerprint_run_source(root.path(), Path::new("rows.csv")).is_err());
+
+    symlink(outside.path(), root.path().join("bundle")).unwrap();
+    let decision = classify_run_output(root.path(), Path::new("bundle"), "intent_any").unwrap();
+    assert_eq!(decision.level, AuthorizationLevel::Fatal);
 }
