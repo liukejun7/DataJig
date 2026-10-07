@@ -1281,6 +1281,8 @@ def _execute_transform(
     attempt: Path,
     artifacts: dict[str, object],
 ) -> None:
+    if "transform_receipt" not in artifacts:
+        _verify_live_pipeline_provider(plan)
     staging = attempt / "staging"
     staging.mkdir(parents=True, exist_ok=True)
     mode = _mapping_text(_plan_mapping(plan, "target"), "mode", "target")
@@ -1338,6 +1340,28 @@ def _execute_transform(
             "transformed_content_id": applied["output_content_id"],
         }
     )
+
+
+def _verify_live_pipeline_provider(plan: Mapping[str, object]) -> None:
+    expected = _plan_mapping(plan, "provider_identity")
+    try:
+        actual = _probe()
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise PipelineError(
+            "PROVIDER_UNAVAILABLE",
+            "DuckDB pipeline support is not installed",
+            remediation="pip install 'datajig[duckdb]'",
+        ) from exc
+    except ProviderError as exc:
+        raise PipelineError(exc.code, exc.message, remediation=exc.remediation) from exc
+    if dict(actual) != dict(expected):
+        raise PipelineError(
+            "PIPELINE_PROVIDER_DRIFT",
+            "The transform provider changed after this pipeline plan was accepted",
+            expected_provider_id=expected.get("provider_id"),
+            actual_provider_id=actual.get("provider_id"),
+            remediation="create and accept a new pipeline plan with the active provider",
+        )
 
 
 def _commit_workspace_head(

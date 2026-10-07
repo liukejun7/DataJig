@@ -4,8 +4,14 @@ import fcntl
 import json
 import os
 from pathlib import Path
+from unittest import mock
 
-from datajig.pipeline import _exchange_directories, _rename_directory_noreplace
+from datajig.pipeline import (
+    PipelineError,
+    _exchange_directories,
+    _rename_directory_noreplace,
+    apply_pipeline,
+)
 from tests.cli_harness import DataJigCliTestCase
 
 
@@ -159,6 +165,27 @@ consumption_plan:
         self.assertEqual("events", drift.payload["error"]["input_alias"])
         self.assertFalse((config.parent / "deliveries").exists())
         self.assertFalse((config.parent / "prepared" / "training.jsonl").exists())
+
+    def test_apply_rejects_live_provider_drift_before_transform(self) -> None:
+        config, _ = self._project()
+        plan, planned = self._plan(config)
+        drifted = dict(planned["provider_identity"])
+        drifted["provider_id"] = "provider_" + "0" * 64
+
+        with (
+            mock.patch("datajig.pipeline._probe", return_value=drifted),
+            self.assertRaises(PipelineError) as raised,
+        ):
+            apply_pipeline(plan, str(planned["pipeline_id"]))
+
+        self.assertEqual("PIPELINE_PROVIDER_DRIFT", raised.exception.code)
+        self.assertEqual(
+            planned["provider_identity"]["provider_id"],
+            raised.exception.details["expected_provider_id"],
+        )
+        self.assertEqual(drifted["provider_id"], raised.exception.details["actual_provider_id"])
+        self.assertFalse((config.parent / "prepared" / "training.jsonl").exists())
+        self.assertFalse((config.parent / "deliveries" / "user-agg-train").exists())
 
     def test_resume_finishes_delivery_after_head_commit_failpoint(self) -> None:
         config, _ = self._project()
