@@ -1,7 +1,7 @@
 use crate::identity::blake3_content_id;
 use crate::io::save_new_file_atomically;
 use crate::strict_json::reject_duplicate_json_members;
-use crate::{CompiledRunTask, RunTaskAst, canonicalize_run_task};
+use crate::{CompiledRunTask, RunTaskAst, SourceFormat, canonicalize_run_task};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
@@ -486,6 +486,152 @@ pub fn fingerprint_run_source(root: &Path, relative: &Path) -> Result<String, Ru
         }
     }
     Ok(format!("source_{}", hasher.finalize().to_hex()))
+}
+
+pub fn resolve_run_source_format(
+    root: &Path,
+    compiled: CompiledRunTask,
+) -> Result<CompiledRunTask, RunControlError> {
+    let relative = Path::new(&compiled.ast.source.path);
+    validate_relative_path(relative, "source")?;
+    let root = canonical_directory(root, "source root")?;
+    reject_symlink_components(&root, relative, "source")?;
+    let source = root.join(relative);
+    let metadata = fs::symlink_metadata(&source).map_err(|error| {
+        RunControlError::new(
+            "SOURCE_LOAD_FAILED",
+            format!("cannot inspect source {}: {error}", relative.display()),
+            "provide an existing direct file or directory",
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !(metadata.is_file() || metadata.is_dir()) {
+        return Err(RunControlError::new(
+            "SOURCE_LOAD_FAILED",
+            "source must be a direct regular file or directory",
+            "replace symbolic links and special files with direct source files",
+        ));
+    }
+    if metadata.is_file() {
+        if compiled.ast.source.format.is_some() {
+            return Ok(compiled);
+        }
+        let format = source_format_from_path(&source)?;
+        return canonicalize_with_source_format(compiled, format);
+    }
+
+    let mut observed = std::collections::BTreeSet::new();
+    let mut file_count = 0_usize;
+    for entry in WalkDir::new(&source).follow_links(false) {
+        let entry = entry.map_err(|error| {
+            RunControlError::new(
+                "SOURCE_LOAD_FAILED",
+                format!("cannot enumerate source: {error}"),
+                "ensure every source member is readable and is not a symbolic link",
+            )
+        })?;
+        let entry_metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| io_error("SOURCE_LOAD_FAILED", error))?;
+        if entry_metadata.file_type().is_symlink() {
+            return Err(RunControlError::new(
+                "SOURCE_LOAD_FAILED",
+                format!(
+                    "source member {} is a symbolic link",
+                    entry.path().display()
+                ),
+                "replace symbolic links with direct source files",
+            ));
+        }
+        if entry_metadata.is_file() {
+            file_count += 1;
+            observed.insert(source_format_from_path(entry.path())?);
+        } else if !entry_metadata.is_dir() {
+            return Err(RunControlError::new(
+                "SOURCE_LOAD_FAILED",
+                format!(
+                    "source member {} is not a regular file",
+                    entry.path().display()
+                ),
+                "remove sockets, devices, and other special files from the source",
+            ));
+        }
+    }
+    if file_count == 0 {
+        return Err(RunControlError::new(
+            "SOURCE_LOAD_FAILED",
+            "source directory contains no files",
+            "add at least one csv, jsonl, or parquet source file",
+        ));
+    }
+    if observed.len() != 1 {
+        let formats = observed
+            .iter()
+            .map(source_format_name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(RunControlError::new(
+            "MIXED_FORMAT",
+            format!("source directory contains mixed formats: {formats}"),
+            "use one source format per directory or split the run into separate inputs",
+        ));
+    }
+    let inferred = *observed.iter().next().expect("one observed source format");
+    if let Some(declared) = compiled.ast.source.format {
+        if declared != inferred {
+            return Err(RunControlError::new(
+                "SOURCE_FORMAT_MISMATCH",
+                format!(
+                    "source declares {} but directory members are {}",
+                    source_format_name(&declared),
+                    source_format_name(&inferred)
+                ),
+                "use a format matching every file in the source directory",
+            ));
+        }
+    }
+    canonicalize_with_source_format(compiled, inferred)
+}
+
+fn canonicalize_with_source_format(
+    compiled: CompiledRunTask,
+    format: SourceFormat,
+) -> Result<CompiledRunTask, RunControlError> {
+    let mut ast = compiled.ast;
+    ast.source.format = Some(format);
+    canonicalize_run_task(ast).map_err(|error| {
+        RunControlError::new(
+            "INVALID_RUN_PLAN",
+            format!("cannot bind inferred source format: {error}"),
+            "provide a source with one supported format",
+        )
+    })
+}
+
+fn source_format_from_path(path: &Path) -> Result<SourceFormat, RunControlError> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("csv") => Ok(SourceFormat::Csv),
+        Some("jsonl") => Ok(SourceFormat::Jsonl),
+        Some("parquet") => Ok(SourceFormat::Parquet),
+        _ => Err(RunControlError::new(
+            "SOURCE_FORMAT_UNSUPPORTED",
+            format!(
+                "source member {} must use .csv, .jsonl, or .parquet",
+                path.display()
+            ),
+            "rename or convert the source to csv, jsonl, or parquet",
+        )),
+    }
+}
+
+fn source_format_name(format: &SourceFormat) -> &'static str {
+    match format {
+        SourceFormat::Csv => "csv",
+        SourceFormat::Jsonl => "jsonl",
+        SourceFormat::Parquet => "parquet",
+    }
 }
 
 pub fn classify_run_output(

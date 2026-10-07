@@ -75,7 +75,7 @@ pub struct RunSourceAst {
     pub source_id_field: SourceIdAst,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceFormat {
     Csv,
