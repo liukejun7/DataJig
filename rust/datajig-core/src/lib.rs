@@ -138,10 +138,11 @@ pub use revision::{
 };
 pub use run_dsl::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
-    FilterPredicateAst, MissingModeAst, PrepareStepAst, RUN_DSL_SCHEMA_VERSION,
-    RUN_INTENT_ID_DOMAIN, RunDslError, RunExportAst, RunPrepareAst, RunSourceAst, RunTaskAst,
-    RunTransformAst, SourceFormat, SourceIdAst, SourceIdMode, TrainingSplitsAst,
-    canonicalize_run_task, compile_dsl,
+    DeterministicPhraseTranslator, FilterPredicateAst, MissingModeAst, PrepareStepAst,
+    RUN_DSL_SCHEMA_VERSION, RUN_INTENT_ID_DOMAIN, RunDslError, RunExportAst, RunPrepareAst,
+    RunSourceAst, RunTaskAst, RunTransformAst, SourceFormat, SourceIdAst, SourceIdMode,
+    TaskTranslator, TrainingSplitsAst, canonicalize_run_task, compile_dsl, compile_task,
+    compile_task_with_translator,
 };
 #[cfg(unix)]
 use std::ffi::OsString;

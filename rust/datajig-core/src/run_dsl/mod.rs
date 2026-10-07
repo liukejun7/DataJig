@@ -2,6 +2,7 @@ mod ast;
 mod error;
 mod lexer;
 mod parser;
+mod phrase;
 
 pub use ast::{
     AggregateAst, AggregateFunctionAst, CaseModeAst, CastTypeAst, CompiledRunTask, DedupeKeepAst,
@@ -11,3 +12,6 @@ pub use ast::{
 };
 pub use error::RunDslError;
 pub use parser::compile_dsl;
+pub use phrase::{
+    DeterministicPhraseTranslator, TaskTranslator, compile_task, compile_task_with_translator,
+};
