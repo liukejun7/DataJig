@@ -47,7 +47,7 @@ fn discovery_commands_publish_one_pinnable_agent_contract_identity() {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     );
     assert_eq!(
-        "contract_f1af5c06a2d08a5ffc8d530f32490f3dfed1262002fc828f9117e69ca3efe13c", identities[0],
+        "contract_fc99c555b5cff0fd8fcb035b12664b2af57db5734ba76e050dbbf56f4fe21587", identities[0],
         "intentional Agent contract changes must update this compatibility pin"
     );
 }
@@ -240,6 +240,28 @@ fn discovery_publishes_the_bounded_transform_contract() {
     let skill = render_agent_skill();
     assert!(skill.contains("transform-plan"));
     assert!(skill.contains("transform-receipt"));
+}
+
+#[test]
+fn discovery_publishes_the_two_phase_run_contract() {
+    let capabilities = run_json(&["capabilities"]);
+    let descriptor = run_json(&["describe", "run"]);
+
+    assert_eq!(true, capabilities["features"]["deterministic_run_planning"]);
+    assert_eq!(json!([1]), capabilities["run_plan_schema_versions"]);
+    assert_eq!(json!("stable_intent_workspace"), capabilities["run_layout"]);
+    assert_eq!(json!("run"), descriptor["command"]["name"]);
+    assert_eq!(json!(false), descriptor["command"]["read_only"]);
+    assert!(
+        descriptor["command"]["usage"]
+            .as_str()
+            .unwrap()
+            .contains("--resume")
+    );
+    let inputs = descriptor["command"]["inputs"].as_array().unwrap();
+    for name in ["task", "strict", "resume", "accept_plan", "yes", "consume"] {
+        assert!(inputs.iter().any(|input| input["name"] == name));
+    }
 }
 
 #[test]

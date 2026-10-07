@@ -86,6 +86,7 @@ class CliDiscoveryTests(unittest.TestCase):
         self.assertIn("transform-apply", completed.stdout)
         self.assertIn("transform-info", completed.stdout)
         self.assertIn("review-plan", completed.stdout)
+        self.assertIn("run", completed.stdout)
         self.assertIn("pipeline", completed.stdout)
         self.assertIn("lineage", completed.stdout)
         self.assertNotRegex(completed.stdout, r"(?m)^  plan\s")

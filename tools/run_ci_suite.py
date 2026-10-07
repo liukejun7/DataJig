@@ -18,6 +18,7 @@ SUITES = {
         "tests.test_patch_transactions",
         "tests.test_prepare_directories",
         "tests.test_repository_cli",
+        "tests.test_run_control",
         "tests.test_small_shards",
         "tests.test_trust_boundaries",
         "tests.test_workspace_workflows",
