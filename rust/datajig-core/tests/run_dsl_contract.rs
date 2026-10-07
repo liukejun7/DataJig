@@ -143,6 +143,18 @@ fn parent_path_traversal_is_rejected_during_compilation() {
 }
 
 #[test]
+fn current_working_directory_is_rejected_as_a_source() {
+    for path in [".", "./"] {
+        let task = format!("from {path} source-id-field auto export id-field _datajig_source_id");
+        let error = compile_dsl(&task).unwrap_err();
+
+        assert_eq!(error.code, "INVALID_DSL");
+        assert_eq!(error.location, "source.path");
+        assert!(error.message.contains("current working directory"));
+    }
+}
+
+#[test]
 fn oversized_split_values_fail_without_integer_overflow() {
     let error = compile_dsl(
         "from rows.csv source-id-field id export train 65535 val 65535 test 65535 id-field id",

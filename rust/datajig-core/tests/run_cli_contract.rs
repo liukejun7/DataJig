@@ -253,3 +253,17 @@ fn mixed_directory_formats_are_rejected_before_a_plan_is_persisted() {
     );
     assert!(!root.path().join(".datajig").exists());
 }
+
+#[test]
+fn direct_file_format_mismatch_is_rejected_before_plan_persistence() {
+    let root = TempDir::new();
+    fs::write(root.path().join("rows.csv"), b"id,value\n1,a\n").unwrap();
+    let task = "from rows.csv format jsonl source-id-field id export id-field id";
+
+    let output = run(root.path(), &["run", task, "--strict"]);
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "SOURCE_FORMAT_MISMATCH");
+    assert!(!root.path().join(".datajig").exists());
+}

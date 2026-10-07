@@ -521,11 +521,21 @@ pub fn resolve_run_source_format(
         ));
     }
     if metadata.is_file() {
-        if compiled.ast.source.format.is_some() {
-            return Ok(compiled);
+        let inferred = source_format_from_path(&source)?;
+        if let Some(declared) = compiled.ast.source.format {
+            if declared != inferred {
+                return Err(RunControlError::new(
+                    "SOURCE_FORMAT_MISMATCH",
+                    format!(
+                        "source declares {} but file extension indicates {}",
+                        source_format_name(&declared),
+                        source_format_name(&inferred)
+                    ),
+                    "use a format matching the source file extension",
+                ));
+            }
         }
-        let format = source_format_from_path(&source)?;
-        return canonicalize_with_source_format(compiled, format);
+        return canonicalize_with_source_format(compiled, inferred);
     }
 
     let mut observed = std::collections::BTreeSet::new();

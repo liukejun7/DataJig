@@ -86,7 +86,10 @@ def run_native(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     requests_help = any(item in {"-h", "--help"} for item in effective_args[1:])
     if command == "transform-plan" and not requests_help:
         _verify_transform_provider()
-    if command == "run" and not requests_help and "--resume" not in effective_args:
+    resumes_run = any(
+        item == "--resume" or item.startswith("--resume=") for item in effective_args[1:]
+    )
+    if command == "run" and not requests_help and not resumes_run:
         provider = _probe_transform_provider_identity()
         effective_args.extend(
             [

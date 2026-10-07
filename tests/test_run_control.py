@@ -15,10 +15,8 @@ class RunControlTests(DataJigCliTestCase):
         artifact = planned["artifact"]
         resumed = self.run_cli(
             "run",
-            "--resume",
-            artifact["attempt_id"],
-            "--accept-plan",
-            artifact["plan_id"],
+            f"--resume={artifact['attempt_id']}",
+            f"--accept-plan={artifact['plan_id']}",
         ).payload
         self.assertEqual("run_completed", resumed["kind"])
         self.assertEqual("applied", resumed["decision"])

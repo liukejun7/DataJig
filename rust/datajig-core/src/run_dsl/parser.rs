@@ -901,6 +901,7 @@ fn infer_format(path: &str) -> Option<SourceFormat> {
 fn validate_path(path: &str, position: usize) -> Result<(), RunDslError> {
     let parsed = Path::new(path);
     if path.is_empty()
+        || parsed == Path::new(".")
         || parsed.is_absolute()
         || parsed
             .components()
@@ -910,8 +911,10 @@ fn validate_path(path: &str, position: usize) -> Result<(), RunDslError> {
             "INVALID_DSL",
             "source.path",
             position,
-            format!("source path `{path}` must be relative and cannot contain `..`"),
-            "use a path below the current working directory",
+            format!(
+                "source path `{path}` must name a child of the current working directory and cannot contain `..`"
+            ),
+            "use a source file or directory below the current working directory",
         ));
     }
     Ok(())
