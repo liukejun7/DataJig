@@ -34,6 +34,7 @@ SUITES = {
         "tests.test_build_hook",
         "tests.test_cli_discovery",
         "tests.test_repository_hygiene",
+        "tests.test_repository_security_config",
         "tests.test_training_consumption",
         "tests.test_tutorial",
     ),
