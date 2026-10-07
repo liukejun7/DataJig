@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:
+      attestations: write
       contents: write
       id-token: write
     steps:
@@ -78,6 +79,10 @@ jobs:
                   version,
               )
           PY
+      - name: Attest verified wheels
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/*.whl
       - name: Stage GitHub Release and attach verified wheels
         if: github.event_name == 'push'
         env:

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Asia/Shanghai",
+  "schedule": ["before 6am on Monday"],
+  "minimumReleaseAge": "7 days",
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 5,
+  "labels": ["dependencies"],
+  "rebaseWhen": "conflicted",
+  "vulnerabilityAlerts": {
+    "enabled": false
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on the first day of the month"]
+  },
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions updates for review",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Group container digest refreshes for review",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["digest"],
+      "groupName": "container digests"
+    },
+    {
+      "description": "Automerge low-risk Python development tool updates after CI",
+      "matchManagers": ["pep621"],
+      "matchPackageNames": ["mypy", "ruff", "types-PyYAML"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": true
+    },
+    {
+      "description": "Require review for runtime dependencies and major updates",
+      "matchDepTypes": ["dependencies"],
+      "automerge": false
+    },
+    {
+      "description": "Require review for every major update",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
