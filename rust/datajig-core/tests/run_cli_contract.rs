@@ -176,6 +176,54 @@ fn resume_reverifies_source_bytes_and_output_eligibility() {
 }
 
 #[test]
+fn resume_rejects_a_plan_bound_to_a_different_run_engine() {
+    use datajig_core::{
+        AuthorizationLevel, RunPlanBinding, TransformProviderIdentity, compile_dsl,
+        create_run_plan, fingerprint_run_source, persist_run_plan,
+    };
+
+    let root = TempDir::new();
+    fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+    let compiled = compile_dsl("from rows.csv source-id-field id export id-field id").unwrap();
+    let binding = RunPlanBinding {
+        source_content_id: fingerprint_run_source(root.path(), Path::new("rows.csv")).unwrap(),
+        engine_version: "datajig-run-engine-v1/0.8.4".into(),
+        provider_identity: TransformProviderIdentity::create(
+            "0.9.0".into(),
+            "1.5.6".into(),
+            "CPython".into(),
+            "3.12.0".into(),
+        )
+        .unwrap(),
+        output: "bundle".into(),
+        consumption: None,
+    };
+    let plan = create_run_plan(
+        &compiled,
+        &binding,
+        "engine-drift-test",
+        AuthorizationLevel::Safe,
+        false,
+    )
+    .unwrap();
+    persist_run_plan(root.path(), &plan).unwrap();
+
+    let resumed = run(
+        root.path(),
+        &[
+            "run",
+            "--resume",
+            &plan.attempt_id,
+            "--accept-plan",
+            &plan.plan_id,
+        ],
+    );
+    assert!(!resumed.status.success());
+    let error: Value = serde_json::from_slice(&resumed.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RUN_ENGINE_DRIFT");
+}
+
+#[test]
 fn consume_options_bind_a_separate_consumption_identity() {
     let root = TempDir::new();
     fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
@@ -316,6 +364,38 @@ fn consumption_run_directory_must_be_new_at_plan_and_resume_time() {
     assert!(!existing_at_resume.status.success());
     let error: Value = serde_json::from_slice(&existing_at_resume.stderr).unwrap();
     assert_eq!(error["error"]["code"], "RUN_CONSUMPTION_CONFLICT");
+}
+
+#[cfg(unix)]
+#[test]
+fn consumption_run_directory_rejects_a_symlinked_ancestor() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new();
+    fs::write(root.path().join("rows.csv"), b"id\n1\n").unwrap();
+    fs::create_dir(root.path().join("actual-runs")).unwrap();
+    symlink("actual-runs", root.path().join("linked-runs")).unwrap();
+
+    let output = run(
+        root.path(),
+        &[
+            "run",
+            "from rows.csv source-id-field id export id-field id",
+            "--strict",
+            "--consume",
+            "--consumer",
+            "pytorch",
+            "--run-id",
+            "training-001",
+            "--run-dir",
+            "linked-runs/training-001",
+        ],
+    );
+
+    assert!(!output.status.success());
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RUN_PATH_INVALID");
+    assert!(!root.path().join(".datajig").exists());
 }
 
 #[test]

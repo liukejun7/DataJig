@@ -1206,7 +1206,7 @@ fn run(cli: Cli) -> Result<(), CommandError> {
                 })?;
                 let binding = RunPlanBinding {
                     source_content_id,
-                    engine_version: format!("datajig-run-engine-v1/{}", env!("CARGO_PKG_VERSION")),
+                    engine_version: run_engine_version(),
                     provider_identity,
                     output: output_text.into(),
                     consumption,
@@ -2564,6 +2564,10 @@ fn run_attempt_nonce() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
+fn run_engine_version() -> String {
+    format!("datajig-run-engine-v1/{}", env!("CARGO_PKG_VERSION"))
+}
+
 fn run_response_artifact(plan: &RunPlanArtifact, plan_path: Option<&Path>) -> Value {
     let mut artifact = serde_json::to_value(plan).expect("run plan should serialize");
     let object = artifact
@@ -2654,6 +2658,18 @@ fn reverify_resumed_run(
     root: &Path,
     plan: &RunPlanArtifact,
 ) -> Result<datajig_core::AuthorizationLevel, CommandError> {
+    let current_engine = run_engine_version();
+    if plan.binding.engine_version != current_engine {
+        return Err((
+            "RUN_ENGINE_DRIFT",
+            2,
+            anyhow::anyhow!(
+                "run engine changed after planning: expected {}, observed {}; create and accept a new run plan",
+                plan.binding.engine_version,
+                current_engine
+            ),
+        ));
+    }
     let compiled = datajig_core::canonicalize_run_task(plan.canonical_ast.clone())
         .map_err(run_dsl_command_error)?;
     resolve_run_source_format(root, compiled).map_err(run_control_command_error)?;

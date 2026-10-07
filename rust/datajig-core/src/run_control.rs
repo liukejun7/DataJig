@@ -747,6 +747,8 @@ pub fn validate_run_consumption_target(
     };
     let run_dir = Path::new(&consumption.run_dir);
     validate_run_public_path(run_dir, "run_dir")?;
+    let root = canonical_directory(root, "run root")?;
+    reject_symlink_components(&root, run_dir, "run_dir")?;
     let target = root.join(run_dir);
     match fs::symlink_metadata(&target) {
         Ok(_) => Err(RunControlError::new(
