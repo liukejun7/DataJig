@@ -118,7 +118,6 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         expected = {
             "requirements/ci.txt",
             "requirements/ci-duckdb.txt",
-            "requirements/ci-manylinux2014.txt",
             "requirements/wheels-linux.txt",
             "requirements/wheels-macos.txt",
         }
@@ -144,15 +143,26 @@ class ReleaseRepositoryHygieneTests(unittest.TestCase):
         self.assertIn("python -m pip install -r requirements/wheels-linux.txt", wheels)
         self.assertIn("python -m pip install -r requirements/wheels-macos.txt", wheels)
         self.assertIn(
-            "--constraint requirements/ci-manylinux2014.txt --only-binary=:all:",
+            "--constraint requirements/ci.txt --only-binary=:all:",
             wheels,
         )
-        manylinux_constraints = (
-            REPOSITORY_ROOT / "requirements" / "ci-manylinux2014.txt"
-        ).read_text(encoding="utf-8")
-        self.assertIn("numpy==2.2.6", manylinux_constraints)
-        self.assertIn("Pillow==12.2.0", manylinux_constraints)
-        self.assertIn("scipy==1.16.3", manylinux_constraints)
+        self.assertFalse(
+            (REPOSITORY_ROOT / "requirements" / "ci-manylinux2014.txt").exists()
+        )
+        self.assertIn("quay.io/pypa/manylinux_2_28_x86_64@sha256:", wheels)
+        self.assertIn("quay.io/pypa/manylinux_2_28_aarch64@sha256:", wheels)
+        self.assertIn("platform: manylinux_2_28_x86_64", wheels)
+        self.assertIn("platform: manylinux_2_28_aarch64", wheels)
+        dependency_text = (REPOSITORY_ROOT / "requirements/ci.txt").read_text()
+        pillow_pin = re.search(
+            r"^Pillow==(\d+)\.(\d+)\.(\d+)$", dependency_text, re.MULTILINE
+        )
+        self.assertIsNotNone(pillow_pin)
+        assert pillow_pin is not None
+        self.assertGreaterEqual(
+            tuple(int(component) for component in pillow_pin.groups()),
+            (12, 3, 0),
+        )
         self.assertGreaterEqual(wheels.count("python -m build --no-isolation"), 2)
         self.assertIsNone(re.search(r"pip install[^\n]*[~><]=?", ci))
         self.assertIsNone(re.search(r"pip install[^\n]*[~><]=?", wheels))
@@ -306,6 +316,36 @@ class RepositoryHygieneTests(unittest.TestCase):
 
         self.assertEqual(1, failed.returncode)
         self.assertIn("commit metadata or message", failed.stderr)
+
+    def test_history_mode_allows_exact_automation_identities(self) -> None:
+        automation_authors = (
+            ("dependabot[bot]", "49699333+dependabot[bot]@users.noreply.github.com"),
+            ("renovate[bot]", "29139614+renovate[bot]@users.noreply.github.com"),
+        )
+        for index, (name, email) in enumerate(automation_authors, start=1):
+            self.git("config", "user.name", name)
+            self.git("config", "user.email", email)
+            (self.root / "safe.txt").write_text(f"automation {index}\n", encoding="utf-8")
+            self.git("add", "safe.txt")
+            self.git("commit", "-q", "-m", f"automation update {index}")
+
+        self.assertEqual(0, self.check("history").returncode)
+
+    def test_history_mode_rejects_spoofed_automation_identity(self) -> None:
+        self.git("config", "user.name", "untrusted-contributor")
+        self.git(
+            "config",
+            "user.email",
+            "49699333+dependabot[bot]@users.noreply.github.com",
+        )
+        (self.root / "safe.txt").write_text("spoofed automation\n", encoding="utf-8")
+        self.git("add", "safe.txt")
+        self.git("commit", "-q", "-m", "spoofed automation update")
+
+        failed = self.check("history")
+
+        self.assertEqual(1, failed.returncode)
+        self.assertIn("unexpected author identity", failed.stderr)
 
     def test_clean_repository_passes_all_modes(self) -> None:
         message = self.root / "COMMIT_EDITMSG"
