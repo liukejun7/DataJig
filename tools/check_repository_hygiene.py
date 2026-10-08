@@ -7,6 +7,10 @@ import sys
 from pathlib import Path, PurePosixPath
 
 REQUIRED_AUTHOR_EMAIL = "liukj7@gmail.com"
+ALLOWED_AUTOMATION_AUTHORS = {
+    ("dependabot[bot]", "49699333+dependabot[bot]@users.noreply.github.com"),
+    ("renovate[bot]", "29139614+renovate[bot]@users.noreply.github.com"),
+}
 FORBIDDEN_EMAIL = bytes.fromhex(
     "6461776e6b69737365724064722e636f6d"
 ).decode("ascii")
@@ -93,10 +97,15 @@ def check_message(path: Path, errors: list[str]) -> None:
 
 
 def check_history(errors: list[str]) -> None:
-    authors = git("log", "--format=%ae", "HEAD").stdout.decode().splitlines()
-    for email in sorted(set(authors)):
-        if email != REQUIRED_AUTHOR_EMAIL:
-            errors.append(f"unexpected author email in history: {email}")
+    author_lines = git("log", "--format=%an%x00%ae", "HEAD").stdout.decode().splitlines()
+    authors = {
+        tuple(line.split("\0", maxsplit=1))
+        for line in author_lines
+        if "\0" in line
+    }
+    for name, email in sorted(authors):
+        if email != REQUIRED_AUTHOR_EMAIL and (name, email) not in ALLOWED_AUTOMATION_AUTHORS:
+            errors.append(f"unexpected author identity in history: {name} <{email}>")
     metadata = git("log", "--format=%ae%n%ce%n%B", "HEAD").stdout.lower()
     if FORBIDDEN_EMAIL.encode() in metadata:
         errors.append("forbidden email in commit metadata or message")

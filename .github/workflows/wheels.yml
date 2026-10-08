@@ -49,14 +49,14 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-24.04
-            image: quay.io/pypa/manylinux2014_x86_64@sha256:ffd6d1f11237599748657996b750db6b3a5b724fea5a81cd9ea65add4f45b6c9
+            image: quay.io/pypa/manylinux_2_28_x86_64@sha256:39df0042d5cc900b085aa25a0659368b42a0006c54c474299b785b44c1b4ff82
             target: x86_64-unknown-linux-gnu
-            platform: manylinux_2_17_x86_64
+            platform: manylinux_2_28_x86_64
           - arch: aarch64
             runner: ubuntu-24.04-arm
-            image: quay.io/pypa/manylinux2014_aarch64@sha256:9026a55e05e76ad74d9a4e6be814a5abda26cde08b1baa659ea4f7ee16b246e3
+            image: quay.io/pypa/manylinux_2_28_aarch64@sha256:f5f03dedf61b47d69d0742d36047db78adeee3bdb7a9910ff52304750ecf2514
             target: aarch64-unknown-linux-gnu
-            platform: manylinux_2_17_aarch64
+            platform: manylinux_2_28_aarch64
     env:
       DATAJIG_BUILD_TARGET: ${{ matrix.target }}
     steps:
@@ -66,7 +66,7 @@ jobs:
           toolchain: 1.85.0
           target: ${{ matrix.target }}
           cache: false
-      - name: Build and test in manylinux2014
+      - name: Build and test in manylinux_2_28
         env:
           MANYLINUX_IMAGE: ${{ matrix.image }}
         run: |
@@ -87,7 +87,7 @@ jobs:
               auditwheel show dist/wheel/*.whl
               python -m twine check dist/wheel/*.whl
               python -m venv /tmp/datajig-wheel-smoke
-              /tmp/datajig-wheel-smoke/bin/python -m pip install --constraint requirements/ci-manylinux2014.txt --only-binary=:all: dist/wheel/*.whl
+              /tmp/datajig-wheel-smoke/bin/python -m pip install --constraint requirements/ci.txt --only-binary=:all: dist/wheel/*.whl
               /tmp/datajig-wheel-smoke/bin/datajig tutorial /tmp/datajig-wheel-tutorial > /tmp/datajig-wheel-tutorial.json
               /tmp/datajig-wheel-smoke/bin/python - <<"PY"
           import json
@@ -228,8 +228,8 @@ jobs:
           wheels = sorted(Path("dist").glob("*.whl"))
           assert len(wheels) == 4, f"expected four preview wheels, found: {wheels}"
           expected = {
-              "manylinux_2_17_x86_64",
-              "manylinux_2_17_aarch64",
+              "manylinux_2_28_x86_64",
+              "manylinux_2_28_aarch64",
               "macosx_10_12_x86_64",
               "macosx_11_0_arm64",
           }
